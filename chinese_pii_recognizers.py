@@ -318,6 +318,105 @@ class IpRecognizerCN(PatternRecognizer):
         )
 
 
+class HongKongPhoneRecognizer(PatternRecognizer):
+    """香港电话识别器（支持简繁体）
+
+    香港电话格式：8位数字，通常 5/6/7/9 开头
+    例如：5123 4567, 9123 4567
+    """
+
+    PATTERNS = [
+        Pattern(
+            name="hk_mobile",
+            # 香港手机号：5/6/7/8/9 开头，共8位
+            regex=r"(?<!\d)([5-9]\d{7})(?!\d)",
+            score=0.85
+        ),
+        Pattern(
+            name="hk_mobile_spaced",
+            # 带空格格式：xxxx xxxx
+            regex=r"(?<!\d)([5-9]\d{3})\s(\d{4})(?!\d)",
+            score=0.9
+        ),
+    ]
+
+    CONTEXT = [
+        # 简体
+        "手机", "电话", "联系电话", "联系方式", "手机号", "移动电话",
+        # 繁体（香港常用）
+        "手機", "手機號", "手機號碼", "電話", "電話號碼", "聯絡電話", "聯絡方式", "流動電話",
+        # 英文（香港常用）
+        "mobile", "phone", "tel", "contact",
+    ]
+
+    def __init__(
+        self,
+        patterns: Optional[List[Pattern]] = None,
+        context: Optional[List[str]] = None,
+        supported_language: str = "en",
+        supported_entity: str = "HK_PHONE_NUMBER",
+    ):
+        patterns = patterns or self.PATTERNS
+        context = context or self.CONTEXT
+        super().__init__(
+            supported_entity=supported_entity,
+            patterns=patterns,
+            context=context,
+            supported_language=supported_language,
+        )
+
+
+class HongKongIDCardRecognizer(PatternRecognizer):
+    """香港身份证识别器（支持简繁体）
+
+    香港身份证格式：
+    - 1个英文字母 + 6位数字 + 括号内校验码，如 A123456(7)
+    - 2个英文字母 + 6位数字 + 括号内校验码，如 AB123456(7)
+
+    括号内校验码可能是数字或字母 A
+    """
+
+    PATTERNS = [
+        Pattern(
+            name="hk_id_single_letter",
+            # 单字母格式：A123456(7) 或 A123456(A)
+            regex=r"(?<![A-Za-z0-9])([A-Z]{1}\d{6}\([0-9A]\))(?![A-Za-z0-9)])",
+            score=0.95
+        ),
+        Pattern(
+            name="hk_id_double_letter",
+            # 双字母格式：AB123456(7) 或 AB123456(A)
+            regex=r"(?<![A-Za-z0-9])([A-Z]{2}\d{6}\([0-9A]\))(?![A-Za-z0-9)])",
+            score=0.95
+        ),
+    ]
+
+    CONTEXT = [
+        # 简体
+        "身份证", "身份证号", "证件号", "身份号码", "身份证号码", "证件号码",
+        # 繁体（香港常用）
+        "身份證", "身份證號碼", "身份證號", "身份證字號", "證件號", "證件號碼", "HKID", "HKID卡",
+        # 英文（香港常用）
+        "ID", "ID card", "HKID", "Hong Kong ID", "identity card",
+    ]
+
+    def __init__(
+        self,
+        patterns: Optional[List[Pattern]] = None,
+        context: Optional[List[str]] = None,
+        supported_language: str = "en",
+        supported_entity: str = "HK_ID_CARD",
+    ):
+        patterns = patterns or self.PATTERNS
+        context = context or self.CONTEXT
+        super().__init__(
+            supported_entity=supported_entity,
+            patterns=patterns,
+            context=context,
+            supported_language=supported_language,
+        )
+
+
 # 导出所有识别器
 CHINA_PII_RECOGNIZERS = [
     ChinaMobilePhoneRecognizer,
@@ -328,4 +427,6 @@ CHINA_PII_RECOGNIZERS = [
     ChinaLicensePlateRecognizer,
     EmailRecognizerCN,
     IpRecognizerCN,
+    HongKongPhoneRecognizer,
+    HongKongIDCardRecognizer,
 ]

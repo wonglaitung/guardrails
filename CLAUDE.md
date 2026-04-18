@@ -2,6 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **  经验教训**：所有关键警告和最佳实践请参阅 [lessons.md](lessons.md)
+> **🔧 编程规范**：规范化开发流程、系统设计决策、测试验证要求请遵守 [docs/programmer_skill.md](docs/programmer_skill.md)
+
 ## Project Overview
 
 Chinese PII Guardrail - 基于 Microsoft Presidio 的中文敏感信息检测与脱敏方案。支持简体中文、繁体中文、英文及中英混合文本。
@@ -56,6 +59,8 @@ UniversalPIIGuardrail  # 自动语言检测版本
 | CN_LICENSE_PLATE | 车牌号 |
 | EMAIL_ADDRESS | 邮箱 |
 | IP_ADDRESS | IP地址 |
+| HK_PHONE_NUMBER | 香港电话 (8位数字，5-9开头) |
+| HK_ID_CARD | 香港身份证 (如 A123456(7), AB123456(A)) |
 
 ## Adding Custom Recognizers
 
@@ -77,6 +82,13 @@ class CustomRecognizer(PatternRecognizer):
 # 注册
 guardrail.analyzer.registry.add_recognizer(CustomRecognizer())
 ```
+
+
+## 📝 会话工作流
+
+- **会话开始时**：读取 `progress.txt` 了解项目进展，审查 `lessons.md` 检查错误
+- **功能更新后**：更新 `progress.txt` 记录进展，如有新学习心得更新 `lessons.md`
+
 
 ## Important Notes
 
