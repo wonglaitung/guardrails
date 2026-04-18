@@ -1,10 +1,70 @@
 """
 香港 PII 识别器测试
 
-测试香港电话和身份证识别功能
+测试香港电话、身份证和姓名识别功能
 """
 
 from chinese_guardrail import ChinesePIIGuardrail, UniversalPIIGuardrail
+
+
+def test_hk_name():
+    """测试香港英文姓名识别"""
+    print("=" * 70)
+    print("香港英文姓名识别测试")
+    print("=" * 70)
+
+    guardrail = ChinesePIIGuardrail()
+
+    # 应该被识别的情况（有上下文）
+    positive_cases = [
+        # 英文上下文
+        ("Name: Chan Tai Man", "英文名字上下文"),
+        ("Customer: Wong Yan Yee", "英文客户上下文"),
+        ("Contact: Lee Chi Wai", "英文联系上下文"),
+        ("Name: Cheung Ka Keung", "常见香港姓氏"),
+        ("Client: Lam Hoi Yan", "英文客户上下文"),
+        # 中文上下文
+        ("姓名：Wong Yan Yee", "简体姓名上下文"),
+        ("客戶姓名：Chan Tai Man", "繁体客户姓名上下文"),
+        ("聯絡人：Lee Ming", "繁体联络人上下文"),
+    ]
+
+    # 不应被识别的情况（无上下文）
+    negative_cases = [
+        ("Wong Yan Yee went to the store", "无上下文英文句子"),
+        ("Chan Tai Man is a student", "无上下文描述"),
+        ("The winner is Lee Chi Wai", "无关键词上下文"),
+    ]
+
+    passed = 0
+    failed = 0
+
+    print("\n应识别为 HK_NAME:")
+    for text, desc in positive_cases:
+        entities = guardrail.detect(text)
+        hk_names = [e for e in entities if e.entity_type == "HK_NAME"]
+
+        if hk_names:
+            passed += 1
+            print(f"✓ [{desc}] '{text}' -> 检测到: {hk_names[0].text}")
+        else:
+            failed += 1
+            print(f"✗ [{desc}] '{text}' -> 未检测到香港姓名")
+
+    print("\n不应识别为 HK_NAME（无上下文）:")
+    for text, desc in negative_cases:
+        entities = guardrail.detect(text)
+        hk_names = [e for e in entities if e.entity_type == "HK_NAME"]
+
+        if not hk_names:
+            passed += 1
+            print(f"✓ [{desc}] '{text}' -> 正确不识别")
+        else:
+            failed += 1
+            print(f"✗ [{desc}] '{text}' -> 错误识别为: {hk_names[0].text}")
+
+    print(f"\n结果: {passed} 通过, {failed} 失败")
+    return failed == 0
 
 
 def test_hk_phone_number():
@@ -173,26 +233,26 @@ def test_mixed_content():
     guardrail = ChinesePIIGuardrail()
 
     text = """
-    客户信息登记表
+    客户信息登记表 / Customer Registration Form
 
-    大陆客户：
+    大陆客户 / Mainland Customer:
     姓名：张三
     手机：13812345678
     身份证：110101199001011234
 
-    香港客户：
+    香港客户 / Hong Kong Customer:
     姓名：Wong Yan Yee
     手機：91234567
     身份證：AB123456(A)
 
-    Hong Kong Customer:
+    Hong Kong Customer (English):
     Name: Chan Tai Man
     Phone: 91234568
-    ID No: P115757(7)
+    ID No: C654321(3)
 
-    联系方式：
-    邮箱：test@example.com
-    IP：192.168.1.1
+    Contact Information:
+    Email: test@example.com
+    IP: 192.168.1.1
     """
 
     print("原文:")
@@ -316,6 +376,7 @@ def run_all_tests():
     print("=" * 70)
 
     results = {
+        "香港英文姓名识别": test_hk_name(),
         "香港电话识别": test_hk_phone_number(),
         "香港身份证识别": test_hk_id_card(),
         "脱敏功能": test_redaction(),
