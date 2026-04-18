@@ -1,0 +1,12 @@
+# 中文 PII Guardrail 依赖
+
+# Presidio 核心库
+presidio-analyzer>=2.2.0
+presidio-anonymizer>=2.2.0
+
+# spaCy 和中文模型
+spacy>=3.8.0
+# 安装中文模型: python -m spacy download zh_core_web_sm
+
+# 可选：英语模型（用于英文 PII 检测）
+# python -m spacy download en_core_web_lg
