@@ -23,6 +23,7 @@ from chinese_pii_recognizers import (
     IpRecognizerCN,
     HongKongPhoneRecognizer,
     HongKongIDCardRecognizer,
+    HongKongNameRecognizer,
 )
 from chinese_name_recognizer import ChineseNameRecognizer, NameMatch
 
@@ -75,6 +76,7 @@ class ChinesePIIGuardrail:
         "CREDIT_CARD": "<信用卡号>",
         "HK_PHONE_NUMBER": "<香港电话>",
         "HK_ID_CARD": "<香港身份证>",
+        "HK_NAME": "<香港姓名>",
     }
 
     # 繁体中文占位符
@@ -94,6 +96,7 @@ class ChinesePIIGuardrail:
         "CREDIT_CARD": "<信用卡號>",
         "HK_PHONE_NUMBER": "<香港電話>",
         "HK_ID_CARD": "<香港身份證>",
+        "HK_NAME": "<香港姓名>",
     }
 
     def __init__(
@@ -163,6 +166,7 @@ class ChinesePIIGuardrail:
             IpRecognizerCN(),
             HongKongPhoneRecognizer(),
             HongKongIDCardRecognizer(),
+            HongKongNameRecognizer(),
         ]
 
         for recognizer in recognizers:
@@ -425,6 +429,7 @@ class UniversalPIIGuardrail:
         "CREDIT_CARD": "<CREDIT_CARD>",
         "HK_PHONE_NUMBER": "<HK_PHONE>",
         "HK_ID_CARD": "<HK_ID>",
+        "HK_NAME": "<NAME>",
     }
 
     def __init__(

@@ -16,6 +16,7 @@
 
 from presidio_analyzer import Pattern, PatternRecognizer
 from typing import List, Optional
+import re
 
 
 class ChinaMobilePhoneRecognizer(PatternRecognizer):
@@ -380,7 +381,7 @@ class HongKongIDCardRecognizer(PatternRecognizer):
         Pattern(
             name="hk_id_single_letter",
             # 单字母格式：A123456(7) 或 A123456(A)
-            regex=r"(?<![A-Za-z0-9])([A-Z]{1}\d{6}\([0-9A]\))(?![A-Za-z0-9)])",
+            regex=r"(?<![A-Za-z0-9])([A-Z]\d{6}\([0-9A]\))(?![A-Za-z0-9)])",
             score=0.95
         ),
         Pattern(
@@ -417,6 +418,114 @@ class HongKongIDCardRecognizer(PatternRecognizer):
         )
 
 
+class HongKongNameRecognizer(PatternRecognizer):
+    """香港英文姓名识别器（基于上下文触发）
+
+    只在上下文关键词（如「姓名：」「Name:」）出现时识别英文姓名。
+    格式：首字母大写的英文名，如 "Wong Yan Yee", "Chan Tai Man"
+    """
+
+    # 香港常见姓氏（用于验证）
+    HK_SURNAMES = {
+        'Wong', 'Chan', 'Lee', 'Cheung', 'Lam', 'Ng', 'Cheng', 'Liu', 'Leung', 'Chow',
+        'Law', 'Yeung', 'Tang', 'Ho', 'Tsang', 'Poon', 'Mak', 'Chiu', 'Fan', 'Kwok',
+        'Lo', 'Chong', 'Lau', 'Fong', 'Yip', 'Chin', 'Yuen', 'Kwan', 'Tam', 'So',
+        'Hui', 'Sze', 'To', 'Kwong', 'Chu', 'Kam', 'Mo', 'Yiu', 'Tse', 'Shum',
+        'Au', 'Tong', 'Man', 'Chik', 'Pang', 'Sit', 'Mok', 'Ko', 'Wan', 'Hung',
+    }
+
+    # 匹配首字母大写的英文名（2-4 个单词，不跨行）
+    PATTERNS = [
+        Pattern(
+            name="hk_english_name",
+            regex=r"([A-Z][a-z]+(?:[ \t]+[A-Z][a-z]+){1,3})",
+            score=0.35
+        ),
+    ]
+
+    # 上下文关键词
+    CONTEXT = [
+        # 简体
+        "姓名", "名字", "联系人", "客户姓名", "用户姓名", "持卡人",
+        # 繁体
+        "聯絡人", "客戶姓名", "用戶姓名",
+        # 英文
+        "Name", "name", "NAME", "Customer", "Contact", "Client",
+    ]
+
+    def __init__(
+        self,
+        patterns: Optional[List[Pattern]] = None,
+        context: Optional[List[str]] = None,
+        supported_language: str = "en",
+        supported_entity: str = "HK_NAME",
+    ):
+        patterns = patterns or self.PATTERNS
+        context = context or self.CONTEXT
+        super().__init__(
+            supported_entity=supported_entity,
+            patterns=patterns,
+            context=context,
+            supported_language=supported_language,
+        )
+
+    def analyze(self, text: str, entities: List[str] = None, nlp_artifacts=None) -> List['RecognizerResult']:
+        """重写 analyze 方法，实现自定义的上下文检测"""
+        from presidio_analyzer import RecognizerResult
+        from presidio_analyzer.analysis_explanation import AnalysisExplanation
+
+        results = []
+
+        # 使用正则匹配所有可能的英文名
+        for pattern in self.patterns:
+            for match in re.finditer(pattern.regex, text):
+                start, end = match.start(), match.end()
+                matched_text = text[start:end]
+
+                # 检查上下文是否存在于匹配位置前
+                context_window = text[max(0, start - 50):start]
+
+                has_context = False
+                matched_context = None
+                for ctx in self.context:
+                    if ctx.lower() in context_window.lower():
+                        has_context = True
+                        matched_context = ctx
+                        break
+
+                # 检查姓氏是否在常见香港姓氏中
+                first_word = matched_text.split()[0]
+                is_hk_surname = first_word in self.HK_SURNAMES
+
+                # 计算分数
+                if has_context:
+                    score = 0.75
+                    if is_hk_surname:
+                        score = 0.85
+                else:
+                    # 无上下文，不返回结果
+                    continue
+
+                # 创建分析解释
+                explanation = AnalysisExplanation(
+                    recognizer=self.name,
+                    original_score=pattern.score,
+                    pattern_name=pattern.name,
+                    pattern=pattern.regex,
+                    validation_result=None,
+                )
+
+                results.append(RecognizerResult(
+                    entity_type=self.supported_entities[0],
+                    start=start,
+                    end=end,
+                    score=score,
+                    analysis_explanation=explanation,
+                ))
+
+        return results
+
+
 # 导出所有识别器
 CHINA_PII_RECOGNIZERS = [
     ChinaMobilePhoneRecognizer,
@@ -429,4 +538,5 @@ CHINA_PII_RECOGNIZERS = [
     IpRecognizerCN,
     HongKongPhoneRecognizer,
     HongKongIDCardRecognizer,
+    HongKongNameRecognizer,
 ]

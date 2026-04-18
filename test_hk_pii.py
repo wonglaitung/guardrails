@@ -181,9 +181,14 @@ def test_mixed_content():
     身份证：110101199001011234
 
     香港客户：
-    姓名：李四
+    姓名：Wong Yan Yee
     手機：91234567
     身份證：AB123456(A)
+
+    Hong Kong Customer:
+    Name: Chan Tai Man
+    Phone: 91234568
+    ID No: P115757(7)
 
     联系方式：
     邮箱：test@example.com
