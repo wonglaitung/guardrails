@@ -22,6 +22,7 @@ from chinese_pii_recognizers import (
     EmailRecognizerCN,
     IpRecognizerCN,
 )
+from chinese_name_recognizer import ChineseNameRecognizer, NameMatch
 
 
 @dataclass
@@ -94,6 +95,7 @@ class ChinesePIIGuardrail:
         placeholders: Optional[Dict[str, str]] = None,
         min_score: float = 0.5,
         script_type: str = "simplified",
+        enable_name_recognition: bool = True,
     ):
         """
         初始化中文 PII Guardrail
@@ -102,11 +104,13 @@ class ChinesePIIGuardrail:
             placeholders: 自定义占位符映射
             min_score: 最小置信度阈值，低于此值的实体将被忽略
             script_type: 字体类型，"simplified"（简体）或 "traditional"（繁体）
+            enable_name_recognition: 是否启用中文姓名识别
         """
         self.analyzer = AnalyzerEngine()
         self.anonymizer = AnonymizerEngine()
         self.min_score = min_score
         self.script_type = script_type
+        self.enable_name_recognition = enable_name_recognition
 
         # 根据字体类型选择占位符
         base_placeholders = (
@@ -115,6 +119,14 @@ class ChinesePIIGuardrail:
             else self.DEFAULT_PLACEHOLDERS
         )
         self.placeholders = {**base_placeholders, **(placeholders or {})}
+
+        # 初始化中文姓名识别器
+        self.name_recognizer = None
+        if enable_name_recognition:
+            try:
+                self.name_recognizer = ChineseNameRecognizer(use_spacy=True)
+            except Exception:
+                pass
 
         # 注册中国 PII 识别器
         self._register_china_recognizers()
@@ -171,6 +183,19 @@ class ChinesePIIGuardrail:
                     end=r.end,
                     score=r.score
                 ))
+
+        # 中文姓名识别
+        if self.enable_name_recognition and self.name_recognizer:
+            name_matches = self.name_recognizer.recognize(text)
+            for name in name_matches:
+                if name.score >= self.min_score:
+                    entities.append(PIIEntity(
+                        entity_type="PERSON",
+                        text=name.text,
+                        start=name.start,
+                        end=name.end,
+                        score=name.score
+                    ))
 
         # 按位置排序并去重
         entities = self._deduplicate_entities(entities)
