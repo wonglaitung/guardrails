@@ -55,6 +55,44 @@ class HybridGuardrail:
         return "passed"
 ```
 
+### 实现方案推荐
+
+#### 方案一：轻量级（推荐）
+
+使用现成的安全分类模型：
+
+```python
+from transformers import pipeline
+
+# ShieldGemma 2B（最轻量，~100ms 延迟）
+classifier = pipeline("text-classification", model="google/shieldgemma-2b")
+
+# 提示注入专检
+injection_detector = pipeline(
+    "text-classification",
+    model="protectai/deberta-v3-base-prompt-injection-v2"
+)
+```
+
+#### 方案二：中等规模
+
+使用 Llama Guard 3（8B），效果更好但需要 GPU。
+
+#### 方案三：流式检测（高级）
+
+参考 Qwen3Guard Stream，在生成过程中实时检测，发现风险立即停止。
+
+### 实施建议
+
+| 阶段 | 建议 |
+|------|------|
+| 现在 | 保持轻量，专注 PII 检测 |
+| 需要内容审核 | 添加 ShieldGemma 2B（可选） |
+| 需要提示注入检测 | 添加 deberta-v3-base-prompt-injection |
+| 完整护栏产品 | 实现 HybridGuardrail 分层架构 |
+
+**核心观点**：LLM-as-a-Judge 是「补充」而非「替代」，规则检测做精准匹配，语义检测做意图理解。
+
 ---
 
 ## llm-guard 实测结论
