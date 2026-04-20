@@ -322,14 +322,15 @@ class IpRecognizerCN(PatternRecognizer):
 class HongKongPhoneRecognizer(PatternRecognizer):
     """香港电话识别器（支持简繁体）
 
-    香港电话格式：8位数字，通常 5/6/7/9 开头
+    香港电话格式：8位数字，通常 5/6/7/8/9 开头
     例如：5123 4567, 9123 4567
+    国际格式：+852 9123 4567, 852-91234567
     """
 
     PATTERNS = [
         Pattern(
             name="hk_mobile",
-            # 香港手机号：5/6/7/8/9 开头，共8位
+            # 基本格式：5/6/7/8/9 开头，共8位
             regex=r"(?<!\d)([5-9]\d{7})(?!\d)",
             score=0.85
         ),
@@ -339,15 +340,54 @@ class HongKongPhoneRecognizer(PatternRecognizer):
             regex=r"(?<!\d)([5-9]\d{3})\s(\d{4})(?!\d)",
             score=0.9
         ),
+        Pattern(
+            name="hk_mobile_hyphen",
+            # 连字符格式：xxxx-xxxx
+            regex=r"(?<!\d)([5-9]\d{3})-(\d{4})(?!\d)",
+            score=0.9
+        ),
+        Pattern(
+            name="hk_intl_with_space",
+            # 国际格式带空格：+852 xxxxxxxx
+            regex=r"(?<![\d+])(?:\+852)\s?([5-9]\d{7})(?!\d)",
+            score=0.95
+        ),
+        Pattern(
+            name="hk_intl_spaced",
+            # 国际格式带空格分隔：+852 xxxx xxxx
+            regex=r"(?<![\d+])(?:\+852)\s([5-9]\d{3})\s(\d{4})(?!\d)",
+            score=0.95
+        ),
+        Pattern(
+        name="hk_intl_hyphen",
+            # 国际格式带连字符：+852-xxxx-xxxx
+            regex=r"(?<![\d+])(?:\+852)-([5-9]\d{3})-(\d{4})(?!\d)",
+            score=0.95
+        ),
+        Pattern(
+            name="hk_code_no_space",
+            # 区号无分隔符：852xxxxxxxx
+            regex=r"(?<![\d+])852([5-9]\d{7})(?!\d)",
+            score=0.85
+        ),
+        Pattern(
+            name="hk_code_hyphen",
+            # 区号带连字符：852-xxxx-xxxx 或 852-xxxxxxxx
+            regex=r"(?<![\d+])852-([5-9]\d{3})-(\d{4})(?!\d)|852-([5-9]\d{7})(?!\d)",
+            score=0.9
+        ),
     ]
 
     CONTEXT = [
         # 简体
-        "手机", "电话", "联系电话", "联系方式", "手机号", "移动电话",
+        "手机", "电话", "联系电话", "联系方式", "手机号", "移动电话", "电话号码",
+        "号码", "致电", "热线",
         # 繁体（香港常用）
-        "手機", "手機號", "手機號碼", "電話", "電話號碼", "聯絡電話", "聯絡方式", "流動電話",
+        "手機", "手機號", "手機號碼", "電話", "電話號碼", "聯絡電話", "聯絡方式",
+        "流動電話", "號碼", "致電", "熱線",
         # 英文（香港常用）
-        "mobile", "phone", "tel", "contact",
+        "mobile", "phone", "telephone", "tel", "contact", "cell", "cellphone",
+        "cellular", "number", "call", "hotline", "hk mobile", "hk phone",
     ]
 
     def __init__(
@@ -374,20 +414,23 @@ class HongKongIDCardRecognizer(PatternRecognizer):
     - 1个英文字母 + 6位数字 + 括号内校验码，如 A123456(7)
     - 2个英文字母 + 6位数字 + 括号内校验码，如 AB123456(7)
 
-    括号内校验码可能是数字或字母 A
+    括号内校验码：0-9 或 A-Z 字母（校验算法生成的结果）
+    有效前缀字母：A-R, T-Z (注意：S 开头的身份证很少见，主要用于特定情况)
     """
 
     PATTERNS = [
         Pattern(
             name="hk_id_single_letter",
             # 单字母格式：A123456(7) 或 A123456(A)
-            regex=r"(?<![A-Za-z0-9])([A-Z]\d{6}\([0-9A]\))(?![A-Za-z0-9)])",
+            # 前缀字母 A-Z，校验码 0-9 或 A-Z
+            regex=r"(?<![A-Za-z0-9])([A-Z]\d{6}\([0-9A-Z]\))(?![A-Za-z0-9)])",
             score=0.95
         ),
         Pattern(
             name="hk_id_double_letter",
             # 双字母格式：AB123456(7) 或 AB123456(A)
-            regex=r"(?<![A-Za-z0-9])([A-Z]{2}\d{6}\([0-9A]\))(?![A-Za-z0-9)])",
+            # 前缀字母 A-Z，校验码 0-9 或 A-Z
+            regex=r"(?<![A-Za-z0-9])([A-Z]{2}\d{6}\([0-9A-Z]\))(?![A-Za-z0-9)])",
             score=0.95
         ),
     ]
@@ -395,10 +438,14 @@ class HongKongIDCardRecognizer(PatternRecognizer):
     CONTEXT = [
         # 简体
         "身份证", "身份证号", "证件号", "身份号码", "身份证号码", "证件号码",
+        "香港身份证", "香港身份证号", "HKID", "HK ID",
         # 繁体（香港常用）
-        "身份證", "身份證號碼", "身份證號", "身份證字號", "證件號", "證件號碼", "HKID", "HKID卡",
+        "身份證", "身份證號碼", "身份證號", "身份證字號", "證件號", "證件號碼",
+        "身分證", "身分證字號", "香港身份證", "香港身分證",
         # 英文（香港常用）
-        "ID", "ID card", "HKID", "Hong Kong ID", "identity card",
+        "ID", "ID card", "HKID", "HK ID", "Hong Kong ID", "Hong Kong Identity",
+        "identity card", "identification", "ID number", "card number",
+        "document", "document no", "document number",
     ]
 
     def __init__(
@@ -426,19 +473,26 @@ class HongKongNameRecognizer(PatternRecognizer):
     """
 
     # 香港常见姓氏（用于验证）
+    # 参考: https://www.bochk.com/en/popular/hk-surname.html
     HK_SURNAMES = {
+        # 十大常见姓氏
         'Wong', 'Chan', 'Lee', 'Cheung', 'Lam', 'Ng', 'Cheng', 'Liu', 'Leung', 'Chow',
-        'Law', 'Yeung', 'Tang', 'Ho', 'Tsang', 'Poon', 'Mak', 'Chiu', 'Fan', 'Kwok',
-        'Lo', 'Chong', 'Lau', 'Fong', 'Yip', 'Chin', 'Yuen', 'Kwan', 'Tam', 'So',
-        'Hui', 'Sze', 'To', 'Kwong', 'Chu', 'Kam', 'Mo', 'Yiu', 'Tse', 'Shum',
-        'Au', 'Tong', 'Man', 'Chik', 'Pang', 'Sit', 'Mok', 'Ko', 'Wan', 'Hung',
+        # 其他常见姓氏 (按字母序)
+        'Au', 'Chik', 'Chin', 'Chiu', 'Chong', 'Chu', 'Fan', 'Fong', 'Ho', 'Hong',
+        'Hung', 'Kam', 'Ko', 'Kwan', 'Kwok', 'Kwong', 'Lau', 'Law', 'Lo', 'Mak',
+        'Man', 'Mo', 'Mok', 'Ngai', 'Pang', 'Poon', 'See', 'Sham', 'Shum', 'Sinn',
+        'Sit', 'Siu', 'So', 'Suen', 'Sun', 'Sze', 'Szeto', 'Tai', 'Tam', 'Tan',
+        'Tang', 'Ting', 'To', 'Tong', 'Tse', 'Tsang', 'Tsui', 'Tsoi', 'Wai', 'Wan',
+        'Wang', 'Woo', 'Wu', 'Xiao', 'Xie', 'Xu', 'Yau', 'Yee', 'Yeung', 'Yim',
+        'Yin', 'Ying', 'Yip', 'Yiu', 'Yong', 'Yu', 'Yue', 'Yuen', 'Yung',
     }
 
-    # 匹配首字母大写的英文名（2-4 个单词，不跨行）
+    # 匹配首字母大写的英文名（2-4 个单词，支持跨行）
     PATTERNS = [
         Pattern(
             name="hk_english_name",
-            regex=r"([A-Z][a-z]+(?:[ \t]+[A-Z][a-z]+){1,3})",
+            # 支持空格、制表符或换行符分隔
+            regex=r"([A-Z][a-z]+(?:[ \t\n]+[A-Z][a-z]+){1,3})",
             score=0.35
         ),
     ]
@@ -446,11 +500,28 @@ class HongKongNameRecognizer(PatternRecognizer):
     # 上下文关键词
     CONTEXT = [
         # 简体
-        "姓名", "名字", "联系人", "客户姓名", "用户姓名", "持卡人",
+        "姓名", "名字", "联系人", "客户", "客户姓名", "用户姓名", "持卡人",
+        "寄件人", "收件人", "发件人", "发货人", "收货人",
         # 繁体
-        "聯絡人", "客戶姓名", "用戶姓名",
+        "聯絡人", "客戶", "客戶姓名", "用戶姓名", "顧客", "持有人",
+        "寄件人", "收件人", "發件人", "發貨人", "收貨人",
         # 英文
-        "Name", "name", "NAME", "Customer", "Contact", "Client",
+        "Name", "name", "NAME",
+        "Customer", "customer", "CUSTOMER",
+        "Contact", "contact", "CONTACT",
+        "Client", "client", "CLIENT",
+        "User", "user", "USER",
+        "Account Holder", "account holder", "Account holder",
+        "Applicant", "applicant", "APPLICANT",
+        "Representative", "representative", "REPRESENTATIVE",
+        "Contact Person", "contact person", "Contact person",
+        "Full Name", "full name", "Full name",
+        "Customer Name", "customer name", "Customer name",
+        "Client Name", "client name", "Client name",
+        "Sender", "sender", "SENDER",
+        "Receiver", "receiver", "RECEIVER",
+        "Consignor", "consignor", "CONSIGNOR",
+        "Consignee", "consignee", "CONSIGNEE",
     ]
 
     def __init__(
@@ -476,34 +547,81 @@ class HongKongNameRecognizer(PatternRecognizer):
 
         results = []
 
+        # 预处理：处理 Name:\nWong 这种情况
+        # 在行首位置添加标记，方便后续检测
+        lines = text.split('\n')
+        processed_lines = []
+        for i, line in enumerate(lines):
+            processed_lines.append(line)
+        processed_text = '\n'.join(processed_lines)
+
         # 使用正则匹配所有可能的英文名
         for pattern in self.patterns:
-            for match in re.finditer(pattern.regex, text):
+            for match in re.finditer(pattern.regex, processed_text):
                 start, end = match.start(), match.end()
-                matched_text = text[start:end]
+                matched_text = processed_text[start:end]
 
                 # 检查上下文是否存在于匹配位置前
-                context_window = text[max(0, start - 50):start]
+                # 扩大上下文窗口并处理换行情况
+                context_window = processed_text[max(0, start - 100):start]
+
+                # 标准化：替换换行符和制表符为空格，便于匹配
+                normalized_context = re.sub(r'[\n\t]+', ' ', context_window).strip()
 
                 has_context = False
                 matched_context = None
                 for ctx in self.context:
-                    if ctx.lower() in context_window.lower():
-                        has_context = True
-                        matched_context = ctx
+                    # 检查多种变体：原样、带冒号、带空格
+                    ctx_variants = [
+                        ctx,
+                        ctx + ":",
+                        ctx + "：",
+                    ]
+                    for variant in ctx_variants:
+                        # 检查标准化后的上下文
+                        if variant.lower() in normalized_context.lower():
+                            has_context = True
+                            matched_context = ctx
+                            break
+                        # 额外检查：上下文是否在行尾（可能下一行是姓名）
+                        if variant.lower() in context_window.lower():
+                            has_context = True
+                            matched_context = ctx
+                            break
+                    if has_context:
                         break
 
                 # 检查姓氏是否在常见香港姓氏中
-                first_word = matched_text.split()[0]
+                first_word = matched_text.split()[0] if matched_text.split() else ""
                 is_hk_surname = first_word in self.HK_SURNAMES
+
+                # 如果不是香港常见姓氏，降低置信度或跳过
+                # 同时检查是否可能是常见西方姓氏
+                common_western_surnames = {
+                    'Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia',
+                    'Miller', 'Davis', 'Rodriguez', 'Martinez', 'Hernandez',
+                    'Lopez', 'Gonzalez', 'Wilson', 'Anderson', 'Thomas',
+                    'Taylor', 'Moore', 'Jackson', 'Martin', 'Lee', 'Walker',
+                    'Hall', 'Allen', 'Young', 'King', 'Scott', 'Green',
+                    'Adams', 'Baker', 'Nelson', 'Carter', 'Mitchell',
+                    'Roberts', 'Turner', 'Phillips', 'Campbell', 'Parker',
+                }
+                is_western_surname = first_word in common_western_surnames
 
                 # 计算分数
                 if has_context:
-                    score = 0.75
                     if is_hk_surname:
-                        score = 0.85
+                        score = 0.85  # 香港姓氏 + 上下文 = 高置信度
+                    elif is_western_surname:
+                        score = 0.25  # 西方姓氏，可能误判
+                    else:
+                        score = 0.35  # 不确定的姓氏
                 else:
                     # 无上下文，不返回结果
+                    continue
+
+                # 如果分数太低，跳过
+                if score < 0.5:
                     continue
 
                 # 创建分析解释

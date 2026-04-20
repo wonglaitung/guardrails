@@ -427,9 +427,9 @@ class UniversalPIIGuardrail:
         "URL": "<URL>",
         "PHONE_NUMBER": "<PHONE>",
         "CREDIT_CARD": "<CREDIT_CARD>",
-        "HK_PHONE_NUMBER": "<HK_PHONE>",
-        "HK_ID_CARD": "<HK_ID>",
-        "HK_NAME": "<NAME>",
+        "HK_PHONE_NUMBER": "<HK_PHONE_NUMBER>",
+        "HK_ID_CARD": "<HK_ID_CARD>",
+        "HK_NAME": "<HK_NAME>",
     }
 
     def __init__(
@@ -519,7 +519,10 @@ class UniversalPIIGuardrail:
             return "simplified"
         else:
             # 没有明显差异时，检查特定繁体词组
-            traditional_keywords = ['手機', '電話', '聯絡', '信箱', '身分證', '護照', '銀行卡', '車牌', '統一', '代碼', '位址', '伺服器']
+            traditional_keywords = [
+                '手機', '電話', '聯絡', '信箱', '身分證', '身份證', '護照', '銀行卡', '車牌',
+                '統一', '代碼', '位址', '伺服器', '客戶', '顧客', '聯絡人', '證件',
+            ]
             for kw in traditional_keywords:
                 if kw in text:
                     return "traditional"
