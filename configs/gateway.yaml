@@ -1,0 +1,71 @@
+# LLM Guard Gateway 配置文件
+
+# 服务器配置
+server:
+  host: "0.0.0.0"
+  port: 8080
+  workers: 1  # 开发环境使用1，生产环境可适当增加
+
+# 日志配置
+logging:
+  level: "info"  # debug, info, warning, error
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# 模型配置
+# 支持多个模型，通过模型名称选择
+models:
+  # OpenAI 配置
+  openai:
+    name: "OpenAI"
+    base_url: "https://api.openai.com"
+    api_key: "${OPENAI_API_KEY}"  # 从环境变量读取
+    timeout: 60.0
+    api_type: "openai"
+
+  # Claude 配置
+  claude:
+    name: "Claude"
+    base_url: "https://api.anthropic.com"
+    api_key: "${ANTHROPIC_API_KEY}"
+    timeout: 60.0
+    api_type: "claude"
+
+  # Azure OpenAI 配置
+  azure:
+    name: "Azure OpenAI"
+    base_url: "${AZURE_OPENAI_ENDPOINT}"
+    api_key: "${AZURE_OPENAI_KEY}"
+    timeout: 60.0
+    api_type: "openai"
+
+  # 本地 Ollama
+  ollama:
+    name: "Local Ollama"
+    base_url: "http://localhost:11434"
+    timeout: 120.0
+    api_type: "openai"
+
+  # 默认模型配置（用于无法识别的模型名称）
+  default:
+    name: "Default"
+    base_url: "https://api.openai.com"
+    api_key: "${OPENAI_API_KEY}"
+    timeout: 60.0
+    api_type: "openai"
+
+# 内容过滤配置
+filter:
+  enabled: true
+  min_score: 0.5  # PII检测置信度阈值 (0-1)
+  action: "redact"  # redact(脱敏) | block(阻断) | log(仅记录)
+
+  # 白名单：这些路径不进行PII检查
+  whitelist_paths:
+    - "/health"
+    - "/metrics"
+    - "/v1/models"
+
+# 安全提示：
+# 1. 不要在配置文件中直接填写API Key，使用环境变量
+# 2. 确保配置文件的权限设置为 600 (仅限所有者读写)
+# 3. 生产环境建议使用专门的密钥管理服务
