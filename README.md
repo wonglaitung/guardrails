@@ -195,6 +195,36 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   }'
 ```
 
+#### Docker 部署（推荐）
+
+使用 Docker 快速部署 Gateway 服务：
+
+```bash
+# 1. 构建镜像
+./docker-build.sh
+
+# 2. 运行容器（使用环境变量）
+export OPENAI_API_KEY="sk-xxx"
+./docker-run.sh
+
+# 或直接使用 docker 命令
+docker run -d \
+  -p 8080:8080 \
+  -v $(pwd)/configs/gateway.yaml:/app/configs/gateway.yaml \
+  -e OPENAI_API_KEY=sk-xxx \
+  -e ANTHROPIC_API_KEY=sk-xxx \
+  --name llm-guard-gateway \
+  --restart unless-stopped \
+  llm-guard-gateway:latest
+```
+
+Docker 镜像特性：
+- 多阶段构建，体积小
+- 使用 Gunicorn + Uvicorn worker，生产就绪
+- 内置健康检查
+- 非 root 用户运行
+- 支持环境变量传入 API keys
+
 ---
 
 ## 支持的 PII 类型
