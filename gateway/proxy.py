@@ -198,17 +198,39 @@ class ProxyHandler:
         return "v1/chat/completions"
 
     def _prepare_headers(self, headers: Dict[str, str], model_config: ModelConfig) -> Dict[str, str]:
-        """准备请求头"""
+        """准备请求头，根据 auth.mode 决定使用哪个 API Key"""
         result = {
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
 
-        # 添加API Key
-        if model_config.api_key:
-            result["Authorization"] = f"Bearer {model_config.api_key}"
-        elif "authorization" in headers:
-            result["Authorization"] = headers["authorization"]
+        auth_mode = self.config.auth.mode
+        config_api_key = model_config.api_key
+        client_auth = headers.get("authorization") or headers.get("Authorization")
+
+        # 根据 auth.mode 选择 API Key
+        if auth_mode == "config":
+            # 只用配置文件的 key
+            if config_api_key:
+                result["Authorization"] = f"Bearer {config_api_key}"
+            else:
+                logger.warning(f"Auth mode is 'config' but no api_key set for model {model_config.name}")
+
+        elif auth_mode == "client":
+            # 只用客户端的 key
+            if client_auth:
+                result["Authorization"] = client_auth
+            else:
+                logger.warning("Auth mode is 'client' but no Authorization header provided")
+
+        else:  # auth_mode == "both" (default)
+            # 优先用配置文件的，如果没有则用客户端的
+            if config_api_key:
+                result["Authorization"] = f"Bearer {config_api_key}"
+            elif client_auth:
+                result["Authorization"] = client_auth
+            else:
+                logger.warning("No API key available (neither config nor client provided)")
 
         # 添加其他必要的头
         for key in ["x-api-key", "anthropic-version"]:

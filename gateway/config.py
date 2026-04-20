@@ -50,12 +50,21 @@ class FilterConfig(BaseModel):
         return v
 
 
+class AuthConfig(BaseModel):
+    """认证配置"""
+    mode: Literal["config", "client", "both"] = "both"
+    # config: 只用配置文件中的 api_key
+    # client: 只用客户端提供的 Authorization
+    # both: 优先用配置文件的，如果没有则用客户端的
+
+
 class GatewayConfig(BaseModel):
     """网关主配置"""
     server: ServerConfig = Field(default_factory=ServerConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     models: Dict[str, ModelConfig] = Field(default_factory=dict)
     filter: FilterConfig = Field(default_factory=FilterConfig)
+    auth: AuthConfig = Field(default_factory=AuthConfig)
 
 
 def load_yaml_config(path: str) -> GatewayConfig:

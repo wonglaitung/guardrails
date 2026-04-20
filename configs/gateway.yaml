@@ -53,6 +53,14 @@ models:
     timeout: 60.0
     api_type: "openai"
 
+# 认证配置
+# mode: config|client|both
+#   - config: 只用配置文件的 api_key，客户端不需要提供 Authorization
+#   - client: 只用客户端提供的 Authorization，配置文件中的 api_key 被忽略
+#   - both: 优先用配置文件的，如果没有设置则用客户端的（默认）
+auth:
+  mode: "both"
+
 # 内容过滤配置
 filter:
   enabled: true
