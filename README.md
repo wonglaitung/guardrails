@@ -1,18 +1,45 @@
-# 中文 PII Guardrail
+# 中文 PII Guardrail + LLM Gateway
 
-基于 Microsoft Presidio 的中文敏感信息检测与脱敏方案。
+基于 Microsoft Presidio 的中文敏感信息检测与脱敏方案，**新增 HTTP 代理网关**，支持 OpenAI/Claude API 格式，实现请求/响应实时 PII 过滤。
 
 **支持简体中文、繁体中文、英文，以及中英混合文本。**
 
+---
+
+## 目录
+
+- [特性](#特性)
+- [快速开始](#快速开始)
+- [两种使用方式](#两种使用方式)
+  - [方式一：Python SDK（库调用）](#方式一python-sdk库调用)
+  - [方式二：HTTP Gateway（代理服务）](#方式二http-gateway代理服务)
+- [支持的 PII 类型](#支持的-pii-类型)
+- [API 参考](#api-参考)
+- [项目结构](#项目结构)
+- [License](#license)
+
+---
+
 ## 特性
 
-- 🔒 **自动检测语言** - 统一入口自动识别简体/繁体/英文
+### PII 检测核心
+- 🔒 **自动语言检测** - 统一入口自动识别简体/繁体/英文
 - 🇨🇳 **中国特有 PII** - 手机号、身份证、银行卡、护照、车牌、统一社会信用代码
+- 🇭🇰 **香港 PII** - 香港电话、身份证、英文姓名识别
 - 🌐 **多语言占位符** - 根据文本语言自动选择对应占位符
 - ⚙️ **灵活配置** - 自定义占位符、置信度阈值、遮盖样式
-- 🚀 **LLM 输出过滤** - 适用于大模型应用的安全护栏
 
-## 安装
+### LLM Gateway（新增）
+- 🚀 **API 代理** - 支持 OpenAI、Claude API 格式
+- 🔄 **流式支持** - SSE 实时过滤，不中断用户体验
+- 🔐 **认证管理** - 支持 config/client/both 三种认证模式
+- ⚡ **异步处理** - 基于 FastAPI + httpx，高性能并发
+
+---
+
+## 快速开始
+
+### 安装
 
 ```bash
 pip install -r requirements.txt
@@ -21,63 +48,154 @@ pip install -r requirements.txt
 python -m spacy download zh_core_web_sm
 ```
 
-## 快速开始
-
-### 统一入口（推荐）
-
-自动检测语言并使用对应的占位符：
+### 方式一：Python SDK（库调用）
 
 ```python
-from chinese_guardrail import scan_pii, mask_pii
+from chinese_guardrail import mask_pii, scan_pii
+
+# 一键脱敏（自动识别语言）
+text = "我的手机号是13812345678，身份证是110101199001011234"
+safe_text = mask_pii(text)
+# 输出: "我的手机号是<手机号>，身份证是<身份证号>"
+
+# 获取详细信息
+safe_text, entities, has_pii = scan_pii(text)
+print(f"检测到 {len(entities)} 个实体")
+for e in entities:
+    print(f"  - {e.entity_type}: {e.text}")
+```
+
+### 方式二：HTTP Gateway（代理服务）
+
+#### 1. 配置网关
+
+编辑 `configs/gateway.yaml`：
+
+```yaml
+models:
+  openai:
+    base_url: "https://api.openai.com"
+    api_key: "${OPENAI_API_KEY}"  # 从环境变量读取
+
+auth:
+  mode: "config"  # config: 客户端无需提供 Authorization
+
+filter:
+  enabled: true
+  min_score: 0.5
+  action: "redact"
+```
+
+#### 2. 启动服务
+
+```bash
+./run_gateway.sh -d  # 开发模式
+```
+
+#### 3. 使用 API
+
+```bash
+# 客户端请求（无需 Authorization，网关使用配置文件中的 key）
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "openai",
+    "messages": [{"role": "user", "content": "我的手机号是13812345678"}]
+  }'
+
+# 发送给上游的内容已过滤为:
+# "我的手机号是<手机号>"
+```
+
+---
+
+## 两种使用方式
+
+### 方式一：Python SDK（库调用）
+
+适用于直接集成到 Python 应用中。
+
+#### 统一入口（推荐）
+
+```python
+from chinese_guardrail import mask_pii, scan_pii
 
 # 简体中文
-safe_text = mask_pii("我的手机号是13812345678")
-# 输出: "我的手机号是<手机号>"
+mask_pii("手机号：13812345678")  # → "手机号：<手机号>"
 
 # 繁体中文
-safe_text = mask_pii("我的手機號是13812345678")
-# 输出: "我的手機號是<手機號>"
+mask_pii("手機號：13812345678")  # → "手機號：<手機號>"
 
 # 英文
-safe_text = mask_pii("My phone is 13812345678")
-# 输出: "My phone is <PHONE>"
+mask_pii("Phone: 13812345678")   # → "Phone: <PHONE>"
 
 # 中英混合
-safe_text = mask_pii("联系人：张三，Email: zhang@test.com")
-# 输出: "联系人：张三，Email: <邮箱>"
+mask_pii("联系人：张三，Email: zhang@test.com")
+# → "联系人：<姓名>，Email: <邮箱>"
 ```
 
-### 获取详细信息
+#### 高级用法
 
 ```python
-from chinese_guardrail import scan_pii
+from chinese_guardrail import UniversalPIIGuardrail
 
-safe_text, entities, has_pii = scan_pii("身份证号：110101199001011234")
+guardrail = UniversalPIIGuardrail(min_score=0.7)
 
-print(f"脱敏: {safe_text}")
-# 输出: "身份证号：<身份证号>"
+# 检测 PII
+entities = guardrail.detect("身份证号：110101199001011234")
 
-print(f"实体: {entities}")
-# 输出: [PIIEntity(CN_ID_CARD: '110101199001011234', score=1.00)]
+# 脱敏处理
+safe_text = guardrail.redact("银行卡号：6222021234567890123")
 
-print(f"包含PII: {has_pii}")
-# 输出: True
+# 验证文本安全性
+is_safe = guardrail.validate("这是一段普通文本")  # True
 ```
 
-### 指定语言
+### 方式二：HTTP Gateway（代理服务）
 
-```python
-from chinese_guardrail import mask_pii
+适用于为 LLM 应用提供统一入口，集中管理 API Key 和 PII 过滤。
 
-# 简体中文
-mask_pii("手机号：13812345678", lang="zh")
+#### 认证模式
 
-# 繁体中文
-mask_pii("手機號：13812345678", lang="zh-tw")
+| 模式 | 行为 | 使用场景 |
+|------|------|---------|
+| `config` | 只用配置文件的 `api_key` | 网关统一托管，客户端无需认证 |
+| `client` | 只用客户端的 `Authorization` | 多租户，各用户自带 Key |
+| `both` | 优先用配置文件，否则用客户端 | 灵活兼容两种模式 |
 
-# 英文
-mask_pii("Phone: 13812345678", lang="en")
+#### 启动服务
+
+```bash
+# 开发模式（自动重载）
+./run_gateway.sh -d
+
+# 生产模式（多进程）
+./run_gateway.sh -p
+
+# 指定配置文件
+./run_gateway.sh -c ./configs/gateway.yaml
 ```
+
+#### 支持的端点
+
+- `POST /v1/chat/completions` - OpenAI 格式
+- `POST /v1/messages` - Claude 格式
+- `GET /health` - 健康检查
+- `GET /v1/models` - 模型列表
+
+#### 流式请求示例
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "openai",
+    "stream": true,
+    "messages": [{"role": "user", "content": "你好"}]
+  }'
+```
+
+---
 
 ## 支持的 PII 类型
 
@@ -92,140 +210,15 @@ mask_pii("Phone: 13812345678", lang="en")
 | 车牌号 | CN_LICENSE_PLATE | 京A12345 | `<车牌号>` | `<車牌號>` |
 | 邮箱 | EMAIL_ADDRESS | zhang@example.com | `<邮箱>` | `<信箱>` |
 | IP地址 | IP_ADDRESS | 192.168.1.1 | `<IP地址>` | `<IP位址>` |
+| 香港电话 | HK_PHONE_NUMBER | 91234567 | `<香港电话>` | `<香港電話>` |
+| 香港身份证 | HK_ID_CARD | A123456(7) | `<香港身份证>` | `<香港身份證>` |
+| 香港英文姓名 | HK_NAME | Wong Yan Yee | `<香港姓名>` | `<香港姓名>` |
 
-## 高级用法
-
-### UniversalPIIGuardrail 类
-
-```python
-from chinese_guardrail import UniversalPIIGuardrail
-
-guardrail = UniversalPIIGuardrail()
-
-# 检测 PII
-entities = guardrail.detect("身份证号：110101199001011234")
-
-# 脱敏处理
-safe_text = guardrail.redact("银行卡号：6222021234567890123")
-
-# 完整检查
-safe_text, entities, has_pii = guardrail.check("手机：13812345678")
-
-# 验证文本安全性
-is_safe = guardrail.validate("这是一段普通文本")  # True
-is_safe = guardrail.validate("手机：13812345678")  # False
-```
-
-### 自定义配置
-
-```python
-from chinese_guardrail import create_guardrail
-
-# 自定义占位符
-custom_placeholders = {
-    "CN_PHONE_NUMBER": "[电话已隐藏]",
-    "CN_ID_CARD": "[身份证已隐藏]",
-}
-
-guardrail = create_guardrail(
-    placeholders=custom_placeholders,
-    min_score=0.7  # 置信度阈值
-)
-
-safe_text = guardrail.redact("手机号：13812345678")
-# 输出: "手机号：[电话已隐藏]"
-```
-
-### 星号遮盖模式
-
-```python
-from chinese_guardrail import ChinesePIIGuardrail
-
-guardrail = ChinesePIIGuardrail()
-
-# 类型标签模式
-safe_text = guardrail.redact("银行卡号：6222021234567890123")
-# 输出: "银行卡号：<银行卡号>"
-
-# 星号遮盖模式
-safe_text = guardrail.redact("银行卡号：6222021234567890123", placeholder_style="mask")
-# 输出: "银行卡号：6*****************3"
-```
-
-### 简体/繁体中文模式
-
-```python
-from chinese_guardrail import ChinesePIIGuardrail, redact_pii, redact_pii_traditional
-
-# 简体中文
-guardrail_sc = ChinesePIIGuardrail(script_type="simplified")
-safe_text = guardrail_sc.redact("手机号是13812345678")
-# 输出: "手机号是<手机号>"
-
-# 繁体中文
-guardrail_tc = ChinesePIIGuardrail(script_type="traditional")
-safe_text = guardrail_tc.redact("手機號是13812345678")
-# 输出: "手機號是<手機號>"
-
-# 快捷函数
-safe_text = redact_pii("身份证号：110101199001011234")
-safe_text = redact_pii_traditional("身分證字號：110101199001011234")
-```
-
-## LLM 输出过滤
-
-作为大模型应用输出层的安全护栏：
-
-```python
-from chinese_guardrail import UniversalPIIGuardrail
-
-guardrail = UniversalPIIGuardrail()
-
-def filter_llm_output(output: str) -> str:
-    """过滤 LLM 输出中的敏感信息"""
-    return guardrail.redact(output)
-
-# 示例
-response = filter_llm_output("根据记录，用户手机号是13812345678，已发送至邮箱zhang@test.com")
-# 输出: "根据记录，用户手机号是<手机号>，已发送至邮箱<邮箱>"
-```
-
-## 扩展自定义识别器
-
-```python
-from presidio_analyzer import Pattern, PatternRecognizer
-from chinese_guardrail import ChinesePIIGuardrail
-
-class CustomRecognizer(PatternRecognizer):
-    """自定义识别器示例"""
-    
-    PATTERNS = [
-        Pattern(
-            name="custom_pattern",
-            regex=r"你的正则表达式",
-            score=0.9
-        )
-    ]
-    
-    # 简体 + 繁体上下文关键词
-    CONTEXT = ["关键词1", "关键词2", "關鍵詞"]
-
-    def __init__(self):
-        super().__init__(
-            supported_entity="CUSTOM_PII",
-            patterns=self.PATTERNS,
-            context=self.CONTEXT,
-            supported_language="en"  # 必须使用 "en"
-        )
-
-# 注册到 guardrail
-guardrail = ChinesePIIGuardrail()
-guardrail.analyzer.registry.add_recognizer(CustomRecognizer())
-```
+---
 
 ## API 参考
 
-### 快捷函数
+### Python SDK
 
 | 函数 | 说明 | 返回值 |
 |------|------|--------|
@@ -243,53 +236,53 @@ guardrail.analyzer.registry.add_recognizer(CustomRecognizer())
 | `"zh-tw"` | 繁体中文 |
 | `"en"` | 英文 |
 
-### ChinesePIIGuardrail
+### Gateway 配置
 
-```python
-ChinesePIIGuardrail(
-    placeholders=None,      # 自定义占位符映射
-    min_score=0.5,          # 最小置信度阈值
-    script_type="simplified" # "simplified" 或 "traditional"
-)
+```yaml
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+models:
+  openai:
+    base_url: "https://api.openai.com"
+    api_key: "${OPENAI_API_KEY}"
+
+auth:
+  mode: "config"  # config | client | both
+
+filter:
+  enabled: true
+  min_score: 0.5
+  action: "redact"  # redact | block | log
 ```
 
-### UniversalPIIGuardrail
+---
 
-```python
-UniversalPIIGuardrail(
-    placeholders=None,      # 自定义占位符映射
-    min_score=0.5,          # 最小置信度阈值
-    default_lang="auto"     # 默认语言
-)
-```
-
-## 文件结构
+## 项目结构
 
 ```
 /data/guardrails/
 ├── chinese_pii_recognizers.py  # PII 识别器模块
-├── chinese_guardrail.py         # 主模块
+├── chinese_guardrail.py         # PII 检测主模块
+├── chinese_name_recognizer.py   # 中文姓名识别
+├── gateway/                     # HTTP 代理网关（新增）
+│   ├── main.py                  # FastAPI 应用入口
+│   ├── proxy.py                 # 代理核心逻辑
+│   ├── stream_handler.py        # SSE 流处理
+│   ├── config.py                # 配置管理
+│   └── models.py                # Pydantic 模型
+├── configs/
+│   └── gateway.yaml             # 网关配置文件
+├── test_hk_pii.py               # 香港 PII 测试
+├── test_gateway.py              # 网关功能测试
 ├── demo.py                      # 使用示例
+├── run_gateway.sh               # 网关启动脚本
 ├── requirements.txt             # 依赖
-├── README.md                    # 说明文档
-└── CLAUDE.md                    # 开发指南
+└── README.md                    # 本文件
 ```
 
-## 运行示例
-
-```bash
-# 运行完整演示
-python demo.py
-
-# 运行测试
-python chinese_guardrail.py
-```
-
-## 注意事项
-
-1. **中文姓名识别**：默认启用，可通过 `enable_name_recognition=False` 禁用
-2. **置信度阈值**：默认 `min_score=0.5`，可根据场景调整
-3. **银行卡号**：由于格式不够唯一，需要上下文关键词（如"银行卡"、"卡号"）来提高准确率
+---
 
 ## License
 
