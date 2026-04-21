@@ -11,6 +11,7 @@
 - [特性](#特性)
 - [快速开始](#快速开始)
 - [两种使用方式](#两种使用方式)
+- [使用案例](#使用案例)
   - [方式一：Python SDK（库调用）](#方式一python-sdk库调用)
   - [方式二：HTTP Gateway（代理服务）](#方式二http-gateway代理服务)
 - [支持的 PII 类型](#支持的-pii-类型)
@@ -42,10 +43,18 @@
 ### 安装
 
 ```bash
+# 克隆项目
+git clone <repository>
+cd chinese-guardrails
+
+# 安装依赖
 pip install -r requirements.txt
 
 # 安装中文 spaCy 模型（必需）
 python -m spacy download zh_core_web_sm
+
+# 安装网关额外依赖
+pip install fastapi uvicorn httpx pydantic pyyaml
 ```
 
 ### 方式一：Python SDK（库调用）
@@ -73,9 +82,19 @@ for e in entities:
 
 ```yaml
 models:
-  openai:
-    base_url: "https://api.openai.com"
-    api_key: "${OPENAI_API_KEY}"  # 从环境变量读取
+  # OpenAI 示例
+  gpt-4:
+    name: "gpt-4"
+    base_url: "https://api.openai.com/v1"
+    api_key: "${OPENAI_API_KEY}"
+    api_type: "openai"
+
+  # 火山方舟 GLM-4.7 示例
+  glm-4.7:
+    name: "glm-4.7"
+    base_url: "https://ark.cn-beijing.volces.com/api/coding/v3"
+    api_key: "${VOLCES_API_KEY}"
+    api_type: "openai"
 
 auth:
   mode: "config"  # config: 客户端无需提供 Authorization
@@ -89,23 +108,52 @@ filter:
 #### 2. 启动服务
 
 ```bash
+# 设置环境变量
+export VOLCES_API_KEY="your-api-key"
+
+# 启动网关
 ./run_gateway.sh -d  # 开发模式
 ```
 
 #### 3. 使用 API
 
+**通过网关访问（自动 PII 过滤）：**
+
 ```bash
-# 客户端请求（无需 Authorization，网关使用配置文件中的 key）
+# 客户端请求（网关自动过滤 PII 后转发）
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "openai",
-    "messages": [{"role": "user", "content": "我的手机号是13812345678"}]
+    "model": "glm-4.7",
+    "messages": [{"role": "user", "content": "我的手机号是13812345678，身份证是110101199001011234"}]
   }'
 
-# 发送给上游的内容已过滤为:
-# "我的手机号是<手机号>"
+# 实际发送给 GLM-4.7 的内容已过滤为:
+# "我的手机号是<手机号>，身份证是<身份证号>"
 ```
+
+**直接访问上游 API（无 PII 保护）：**
+
+```bash
+# 直接调用火山方舟 API（绕过网关，无 PII 过滤）
+curl -X POST https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-api-key" \
+  -d '{
+    "model": "glm-4.7",
+    "messages": [{"role": "user", "content": "你好"}]
+  }'
+```
+
+**两种访问方式对比：**
+
+| 特性 | 直接访问上游 | 通过网关访问 |
+|------|-------------|-------------|
+| PII 过滤 | ❌ 无 | ✅ 自动脱敏 |
+| API Key 管理 | 客户端持有 | 网关统一托管 |
+| 访问控制 | 依赖上游 | 支持白名单/认证 |
+| 日志审计 | ❌ 无 | ✅ 完整记录 |
+| 流式响应 | ✅ 支持 | ✅ 支持 |
 
 ---
 
@@ -201,22 +249,50 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ```bash
 # 1. 构建镜像
-./docker-build.sh
+docker build -t guardrails-gateway:latest .
 
-# 2. 运行容器（使用环境变量）
-export OPENAI_API_KEY="sk-xxx"
-./docker-run.sh
-
-# 或直接使用 docker 命令
+# 2. 运行容器（火山方舟 GLM-4.7 示例）
 docker run -d \
   -p 8080:8080 \
-  -v $(pwd)/configs/gateway.yaml:/app/configs/gateway.yaml \
-  -e OPENAI_API_KEY=sk-xxx \
-  -e ANTHROPIC_API_KEY=sk-xxx \
-  --name llm-guard-gateway \
+  -e VOLCES_API_KEY="your-api-key" \
+  -e GATEWAY_WORKERS=2 \
+  --name guardrails-gateway \
   --restart unless-stopped \
-  llm-guard-gateway:latest
+  guardrails-gateway:latest
+
+# 3. 测试访问
+curl http://localhost:8080/health
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "glm-4.7", "messages": [{"role": "user", "content": "你好"}]}'
 ```
+
+**多模型配置示例：**
+
+```bash
+# 同时支持 OpenAI + 火山方舟
+docker run -d \
+  -p 8080:8080 \
+  -e OPENAI_API_KEY="sk-openai-xxx" \
+  -e VOLCES_API_KEY="your-api-key" \
+  -e GATEWAY_WORKERS=4 \
+  -e GATEWAY_LOG_LEVEL=info \
+  --name guardrails-gateway \
+  guardrails-gateway:latest
+```
+
+**支持的环境变量：**
+
+| 变量名 | 说明 | 默认值 |
+|--------|------|--------|
+| `GATEWAY_WORKERS` | Gunicorn worker 数量 | 4 |
+| `GATEWAY_HOST` | 绑定主机 | 0.0.0.0 |
+| `GATEWAY_PORT` | 绑定端口 | 8080 |
+| `GATEWAY_CONFIG` | 配置文件路径 | /app/configs/gateway.yaml |
+| `GATEWAY_LOG_LEVEL` | 日志级别 | warning |
+| `VOLCES_API_KEY` | 火山方舟 API Key | - |
+| `OPENAI_API_KEY` | OpenAI API Key | - |
+| `ANTHROPIC_API_KEY` | Claude API Key | - |
 
 Docker 镜像特性：
 - 多阶段构建，体积小
@@ -224,6 +300,99 @@ Docker 镜像特性：
 - 内置健康检查
 - 非 root 用户运行
 - 支持环境变量传入 API keys
+
+---
+
+## 使用案例
+
+### 案例一：火山方舟 GLM-4.7
+
+#### 方式 A：直接访问上游 API
+
+```bash
+# 直接调用火山方舟（无 PII 保护）
+curl -s https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-api-key" \
+  -d '{
+    "model": "glm-4.7",
+    "messages": [
+      {"role": "user", "content": "我的手机号是13800138000，请帮我查一下余额"}
+    ],
+    "max_tokens": 100
+  }'
+
+# ⚠️ 注意：手机号明文发送到第三方，存在泄露风险
+```
+
+#### 方式 B：通过网关访问（推荐）
+
+```bash
+# 1. 启动网关
+export VOLCES_API_KEY="your-api-key"
+./run_gateway.sh -d
+
+# 2. 通过网关调用（自动 PII 过滤）
+curl -s http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "glm-4.7",
+    "messages": [
+      {"role": "user", "content": "我的手机号是13800138000，请帮我查一下余额"}
+    ],
+    "max_tokens": 100
+  }'
+
+# ✅ 实际发送到 GLM-4.7 的内容：
+# "我的手机号是<手机号>，请帮我查一下余额"
+```
+
+### 案例二：混合场景（OpenAI + 火山方舟）
+
+```yaml
+# configs/gateway.yaml
+models:
+  gpt-4:
+    name: "gpt-4"
+    base_url: "https://api.openai.com/v1"
+    api_key: "${OPENAI_API_KEY}"
+    api_type: "openai"
+
+  glm-4.7:
+    name: "glm-4.7"
+    base_url: "https://ark.cn-beijing.volces.com/api/coding/v3"
+    api_key: "${VOLCES_API_KEY}"
+    api_type: "openai"
+```
+
+```bash
+# 同一网关，切换不同上游模型
+
+# 调用 OpenAI GPT-4
+curl http://localhost:8080/v1/chat/completions \
+  -d '{"model": "gpt-4", "messages": [{"role": "user", "content": "你好"}]}'
+
+# 调用火山方舟 GLM-4.7
+curl http://localhost:8080/v1/chat/completions \
+  -d '{"model": "glm-4.7", "messages": [{"role": "user", "content": "你好"}]}'
+
+# 两个请求都经过相同的 PII 过滤处理
+```
+
+### 案例三：流式响应
+
+```bash
+# 通过网关使用流式响应（SSE）
+curl -s http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "glm-4.7",
+    "messages": [{"role": "user", "content": "我的邮箱是zhangsan@example.com"}],
+    "stream": true
+  }'
+
+# 流式响应中，PII 同样会被实时过滤
+```
 
 ---
 

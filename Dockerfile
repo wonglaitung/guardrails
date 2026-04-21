@@ -2,7 +2,7 @@
 # 生产就绪配置：使用 Gunicorn + Uvicorn worker
 
 # ========== 阶段一：构建环境 ==========
-FROM python:3.11-slim as builder
+FROM python:3.11-slim AS builder
 
 # 安装编译依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -21,13 +21,14 @@ RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir gunicorn uvicorn[standard]
+    pip install --no-cache-dir gunicorn uvicorn[standard] httpx[http2]
 
-# 下载 spaCy 中文模型
-RUN python -m spacy download zh_core_web_sm
+# 下载 spaCy 模型（中文 + 轻量级英文，避免运行时下载大模型）
+RUN python -m spacy download zh_core_web_sm && \
+    python -m spacy download en_core_web_sm
 
 # ========== 阶段二：运行环境 ==========
-FROM python:3.11-slim as runtime
+FROM python:3.11-slim AS runtime
 
 # 安装运行时依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -67,15 +68,15 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
 
-# 启动命令：使用 Gunicorn + Uvicorn worker
-# workers = CPU核心数 * 2 + 1
-# 这里使用 4 个 worker 作为默认值
-CMD ["gunicorn", \
-    "-w", "4", \
-    "-k", "uvicorn.workers.UvicornWorker", \
-    "--bind", "0.0.0.0:8080", \
-    "--access-logfile", "-", \
-    "--error-logfile", "-", \
-    "--capture-output", \
-    "--enable-stdio-inheritance", \
-    "gateway.main:app"]
+# 复制启动脚本
+COPY --chown=gateway:gateway docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# 设置环境变量默认值
+ENV GATEWAY_WORKERS=4 \
+    GATEWAY_HOST=0.0.0.0 \
+    GATEWAY_PORT=8080 \
+    GATEWAY_CONFIG=/app/configs/gateway.yaml
+
+# 启动命令：使用入口脚本支持环境变量
+ENTRYPOINT ["docker-entrypoint.sh"]

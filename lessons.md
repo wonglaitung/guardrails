@@ -1,5 +1,103 @@
 # 经验教训
 
+## Docker 构建问题
+
+### 问题：docker-entrypoint.sh 未找到
+
+**现象**：
+```
+ERROR: failed to solve: failed to compute cache key: 
+"/docker-entrypoint.sh": not found
+```
+
+**原因**：`.dockerignore` 中有 `docker-*.sh`，排除了入口脚本
+
+**修复**：
+```dockerignore
+# Docker
+Dockerfile
+.dockerignore
+# 注意：docker-entrypoint.sh 是容器启动必需的，不要排除
+```
+
+**教训**：`.dockerignore` 中排除模式会覆盖构建上下文，入口脚本等必需文件需要显式保留或避免匹配。
+
+---
+
+## 网关环境变量处理
+
+### 问题：环境变量未传递到后台进程
+
+**现象**：
+- 配置文件中 `${ENV_VAR}` 展开为 `None`
+- Pydantic 验证失败：`Input should be a valid string`
+
+**原因**：
+```python
+# 错误实现 - 返回 None
+def expand_env_vars(value):
+    if value.startswith("${") and value.endswith("}"):
+        env_var = value[2:-1]
+        return os.getenv(env_var, None)  # ❌ 未设置时返回 None
+```
+
+**修复**：
+```python
+# 正确实现 - 保持原值，由验证器过滤
+def expand_env_vars(value):
+    if value.startswith("${") and value.endswith("}"):
+        env_var = value[2:-1]
+        env_value = os.getenv(env_var)
+        if env_value is not None:
+            return env_value
+        # 环境变量未设置，保持原样
+        return value  # ✅ 保持 ${VAR} 原值
+
+# 验证器过滤不完整配置
+@field_validator("models", mode="after")
+def filter_incomplete_models(cls, v):
+    filtered = {}
+    for name, config in v.items():
+        if config.base_url and "${" in config.base_url:
+            continue  # 跳过未配置的模型
+        filtered[name] = config
+    return filtered
+```
+
+**关键原则**：
+1. 配置解析阶段：保留未展开的变量，不要返回 `None`
+2. 验证阶段：过滤掉配置不完整的项，而非让整体验证失败
+3. 这使得部分模型未配置时，其他模型仍能正常工作
+
+---
+
+## 火山方舟 API 配置
+
+### 端点格式
+
+**正确**：
+```yaml
+base_url: "https://ark.cn-beijing.volces.com/api/coding/v3"  # ✅ 包含 /v3
+api_key: "${VOLCES_API_KEY}"
+```
+
+**错误**：
+```yaml
+base_url: "https://ark.cn-beijing.volces.com/api/coding"      # ❌ 缺少 /v3
+```
+
+### 模型名称
+
+火山方舟使用**模型名称**（如 `glm-4.7`）而非接入点 ID，调用时：
+```json
+{
+  "model": "glm-4.7",
+  "messages": [...]
+}
+```
+
+---
+
 ## LLM-as-a-Judge 概念
 
 ### 定义

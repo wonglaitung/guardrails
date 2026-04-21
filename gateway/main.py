@@ -127,8 +127,13 @@ async def chat_completions(request: Request):
     # 获取请求头
     headers = dict(request.headers)
 
+    # 获取客户端IP
+    client_ip = request.client.host if request.client else "unknown"
+    x_forwarded_for = request.headers.get("X-Forwarded-For") or request.headers.get("X-Real-IP")
+    client_info = x_forwarded_for or client_ip
+
     # 过滤请求中的PII
-    filtered_body = await proxy.filter_request(body)
+    filtered_body = await proxy.filter_request(body, client_info)
 
     # 检查是否是流式请求
     is_stream = filtered_body.get("stream", False)

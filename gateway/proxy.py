@@ -24,16 +24,20 @@ class ProxyHandler:
         self.guardrail = UniversalPIIGuardrail(
             min_score=config.filter.min_score
         )
-        self.sse_handler = SSEHandler(self.guardrail)
+        self.sse_handler = SSEHandler(self.guardrail, filter_response=config.filter.filter_response)
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(config.models.get("default", ModelConfig(name="default", base_url="")).timeout),
             http2=True,
         )
         logger.info("ProxyHandler initialized")
 
-    async def filter_request(self, body: Dict[str, Any]) -> Dict[str, Any]:
+    async def filter_request(self, body: Dict[str, Any], client_info: Optional[str] = None) -> Dict[str, Any]:
         """
         过滤请求中的PII
+
+        Args:
+            body: 请求体
+            client_info: 客户端信息（IP地址等）
 
         支持OpenAI和Claude格式的消息。
         """
@@ -41,6 +45,7 @@ class ProxyHandler:
             return body
 
         filtered_body = body.copy()
+        client_str = f"[Client: {client_info}] " if client_info else ""
 
         # 处理 OpenAI 格式 /v1/chat/completions
         if "messages" in filtered_body:
@@ -49,16 +54,28 @@ class ProxyHandler:
                 if isinstance(msg, dict) and "content" in msg:
                     content = msg["content"]
                     if isinstance(content, str):
+                        # 检测并记录PII
+                        entities = self.guardrail.detect(content)
+                        if entities:
+                            logger.warning(f"[PII Detected] {client_str}Request contains {len(entities)} PII entities: {[f'{e.entity_type}({e.text})' for e in entities]}")
                         msg["content"] = self.guardrail.redact(content)
                     elif isinstance(content, list):
                         # 处理多模态内容
                         for item in content:
                             if isinstance(item, dict) and item.get("type") == "text":
-                                item["text"] = self.guardrail.redact(item["text"])
+                                text = item.get("text", "")
+                                entities = self.guardrail.detect(text)
+                                if entities:
+                                    logger.warning(f"[PII Detected] {client_str}Request contains {len(entities)} PII entities: {[f'{e.entity_type}({e.text})' for e in entities]}")
+                                item["text"] = self.guardrail.redact(text)
 
         # 处理 Claude 格式 /v1/messages
         if "prompt" in filtered_body:
-            filtered_body["prompt"] = self.guardrail.redact(filtered_body["prompt"])
+            content = filtered_body["prompt"]
+            entities = self.guardrail.detect(content)
+            if entities:
+                logger.warning(f"[PII Detected] {client_str}Request contains {len(entities)} PII entities: {[f'{e.entity_type}({e.text})' for e in entities]}")
+            filtered_body["prompt"] = self.guardrail.redact(content)
 
         return filtered_body
 
@@ -76,11 +93,8 @@ class ProxyHandler:
         model_name = body.get("model", "default")
         model_config = self._get_model_config(model_name)
 
-        if not model_config:
-            raise ValueError(f"Unknown model: {model_name}")
-
         # 构建目标URL
-        path = self._get_api_path(body)
+        path = self._get_api_path(body, model_config.api_type)
         url = f"{model_config.base_url.rstrip('/')}/{path}"
 
         # 准备请求头
@@ -99,8 +113,8 @@ class ProxyHandler:
             # 解析响应
             result = response.json()
 
-            # 过滤响应内容
-            if self.config.filter.enabled:
+            # 过滤响应内容（如果启用）
+            if self.config.filter.enabled and self.config.filter.filter_response:
                 result = self._filter_response(result)
 
             return result
@@ -130,11 +144,8 @@ class ProxyHandler:
         model_name = body.get("model", "default")
         model_config = self._get_model_config(model_name)
 
-        if not model_config:
-            raise ValueError(f"Unknown model: {model_name}")
-
         # 构建目标URL
-        path = self._get_api_path(body)
+        path = self._get_api_path(body, model_config.api_type)
         url = f"{model_config.base_url.rstrip('/')}/{path}"
 
         # 准备请求头
@@ -172,30 +183,26 @@ class ProxyHandler:
             raise
 
     def _get_model_config(self, model_name: str) -> Optional[ModelConfig]:
-        """获取模型配置"""
-        # 直接匹配
+        """获取模型配置 - 完全按模型名直接匹配"""
+        # 直接匹配模型名
         if model_name in self.config.models:
             return self.config.models[model_name]
 
-        # 尝试前缀匹配 (e.g., "gpt-4" matches "openai")
-        for name, config in self.config.models.items():
-            if model_name.startswith(config.name.lower()) or model_name.startswith(name):
-                return config
+        # 未找到匹配的配置
+        logger.error(f"Unknown model: {model_name}. Available models: {list(self.config.models.keys())}")
+        raise ValueError(f"Unknown model: {model_name}")
 
-        # 返回默认模型
-        if "default" in self.config.models:
-            return self.config.models["default"]
-
-        return None
-
-    def _get_api_path(self, body: Dict[str, Any]) -> str:
-        """根据请求体确定API路径"""
+    def _get_api_path(self, body: Dict[str, Any], api_type: str) -> str:
+        """根据请求体确定API路径 - 只拼接 endpoint，版本号由 base_url 包含"""
         # Claude 格式
-        if "prompt" in body and "messages" not in body:
-            return "v1/complete"
+        if api_type == "claude":
+            if "messages" in body:
+                return "messages"  # Claude 3
+            if "prompt" in body:
+                return "complete"  # 旧版 Claude
 
         # OpenAI 格式（默认）
-        return "v1/chat/completions"
+        return "chat/completions"
 
     def _prepare_headers(self, headers: Dict[str, str], model_config: ModelConfig) -> Dict[str, str]:
         """准备请求头，根据 auth.mode 决定使用哪个 API Key"""
@@ -236,6 +243,11 @@ class ProxyHandler:
         for key in ["x-api-key", "anthropic-version"]:
             if key in headers:
                 result[key] = headers[key]
+
+        # 添加模型配置的自定义 headers（如 Host）
+        if model_config.custom_headers:
+            for key, value in model_config.custom_headers.items():
+                result[key] = value
 
         return result
 

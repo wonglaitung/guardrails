@@ -32,6 +32,8 @@ class ModelConfig(BaseModel):
     api_key: Optional[str] = None
     timeout: float = 60.0
     api_type: Literal["openai", "claude"] = "openai"
+    api_path: Optional[str] = None  # 自定义 API 路径
+    custom_headers: Optional[Dict[str, str]] = None  # 自定义请求头（如 Host）
 
 
 class FilterConfig(BaseModel):
@@ -41,6 +43,7 @@ class FilterConfig(BaseModel):
     action: Literal["redact", "block", "log"] = "redact"
     placeholders: Optional[Dict[str, str]] = None
     whitelist_paths: List[str] = Field(default_factory=list)
+    filter_response: bool = False  # 是否对LLM响应进行PII过滤（默认关闭，只保护用户输入）
 
     @field_validator("min_score")
     @classmethod
@@ -66,11 +69,25 @@ class GatewayConfig(BaseModel):
     filter: FilterConfig = Field(default_factory=FilterConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
 
+    @field_validator("models", mode="after")
+    @classmethod
+    def filter_incomplete_models(cls, v):
+        """过滤掉配置不完整的模型（base_url 包含 ${ 表示环境变量未设置）"""
+        filtered = {}
+        for name, config in v.items():
+            if config.base_url and "${" in config.base_url:
+                # 环境变量未设置，跳过此模型
+                continue
+            filtered[name] = config
+        return filtered
+
 
 def load_yaml_config(path: str) -> GatewayConfig:
-    """从YAML文件加载配置"""
+    """从YAML文件加载配置，支持环境变量展开"""
     with open(path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
+    # 递归展开环境变量
+    data = expand_env_vars(data)
     return GatewayConfig(**data)
 
 
@@ -108,14 +125,21 @@ def load_config(config_path: Optional[str] = None) -> GatewayConfig:
 
 
 def expand_env_vars(value):
-    """递归展开环境变量"""
+    """递归展开环境变量，未设置的变量保持原样"""
     if isinstance(value, str):
         if value.startswith("${") and value.endswith("}"):
             env_var = value[2:-1]
             default = None
+            # 支持 ${VAR:-default} 语法
             if ":-" in env_var:
                 env_var, default = env_var.split(":-", 1)
-            return os.getenv(env_var, default)
+            env_value = os.getenv(env_var)
+            if env_value is not None:
+                return env_value
+            if default is not None:
+                return default
+            # 环境变量未设置且无默认值，保持原样
+            return value
         return value
     elif isinstance(value, dict):
         return {k: expand_env_vars(v) for k, v in value.items()}

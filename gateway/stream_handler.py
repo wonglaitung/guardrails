@@ -14,8 +14,9 @@ logger = logging.getLogger(__name__)
 class SSEHandler:
     """SSE流处理器"""
 
-    def __init__(self, guardrail):
+    def __init__(self, guardrail, filter_response: bool = True):
         self.guardrail = guardrail
+        self.filter_response = filter_response
 
     @staticmethod
     def parse_sse_line(line: str) -> Optional[dict]:
@@ -84,6 +85,10 @@ class SSEHandler:
 
         支持OpenAI和Claude的SSE格式。
         """
+        # 如果禁用响应过滤，直接返回原始数据
+        if not self.filter_response:
+            return data
+
         result = data.copy()
 
         # OpenAI 格式

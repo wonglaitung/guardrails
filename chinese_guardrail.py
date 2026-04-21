@@ -115,7 +115,13 @@ class ChinesePIIGuardrail:
             script_type: 字体类型，"simplified"（简体）或 "traditional"（繁体）
             enable_name_recognition: 是否启用中文姓名识别
         """
-        self.analyzer = AnalyzerEngine()
+        # 配置 Presidio：使用轻量级英文模型，避免运行时下载大模型
+        from presidio_analyzer import AnalyzerEngine, RecognizerRegistry
+        from presidio_analyzer.nlp_engine import NlpEngineProvider
+        registry = RecognizerRegistry()
+        nlp_config = {"nlp_engine_name": "spacy", "models": [{"lang_code": "en", "model_name": "en_core_web_sm"}]}
+        nlp_engine = NlpEngineProvider(nlp_configuration=nlp_config).create_engine()
+        self.analyzer = AnalyzerEngine(registry=registry, nlp_engine=nlp_engine)
         self.anonymizer = AnonymizerEngine()
         self.min_score = min_score
         self.script_type = script_type
