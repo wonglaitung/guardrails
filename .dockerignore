@@ -52,7 +52,7 @@ docs/
 # Docker
 Dockerfile
 .dockerignore
-docker-*.sh
+# 注意：docker-entrypoint.sh 是容器启动必需的，不要排除
 
 # Logs
 logs/
