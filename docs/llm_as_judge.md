@@ -5,10 +5,13 @@
 - **部署方式**：私有化部署，不依赖外部 API
 - **语言支持**：中文为主
 - **核心功能**：内容合规检测 + 信息泄露检查
+- **离线部署**：支持完全离线（Air-gapped）环境
 
 ---
 
 ## 架构设计
+
+### 标准部署架构
 
 ### 双层防护架构
 
@@ -61,6 +64,523 @@
 
 ---
 
+## 离线部署架构（Air-gapped Environment）
+
+### 离线环境特殊挑战
+
+| 挑战 | 说明 |
+|------|------|
+| 模型获取 | 无法从 Hugging Face 在线下载 |
+| 依赖安装 | 无法通过 pip 在线安装 |
+| 算力限制 | 离线服务器通常 GPU 资源有限 |
+| 延迟要求 | 无云端弹性扩容，需优化本地吞吐量 |
+
+### 离线部署架构图
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                    离线部署架构（带模型路由）                       │
+├──────────────────────────────────────────────────────────────────┤
+│                                                                   │
+│  用户输入                                                         │
+│      │                                                            │
+│      ▼                                                            │
+│  ┌─────────────────────────────────────┐                         │
+│  │      第一层：规则检测（离线化）       │                         │
+│  │  ┌─────────────────────────────┐    │  延迟 <1ms              │
+│  │  │ PII 正则（本地 regex.json）  │    │  无网络依赖             │
+│  │  │ NER 检测（SpaCy/LTP 离线）   │    │  变体敏感词识别         │
+│  │  │ 密钥检测（本地模式库）        │    │                         │
+│  │  └─────────────────────────────┘    │                         │
+│  └─────────────────────────────────────┘                         │
+│      │ 通过                                                       │
+│      ▼                                                            │
+│  ┌─────────────────────────────────────┐                         │
+│  │      第二层：模型路由（Router）       │                         │
+│  │  ┌─────────────────────────────┐    │                         │
+│  │  │ 判定请求复杂度和可疑程度     │    │  智能路由决策           │
+│  │  │ confidence < 0.7 → 大模型   │    │  节省 90% 算力          │
+│  │  │ confidence >= 0.7 → 小模型  │    │                         │
+│  │  └─────────────────────────────┘    │                         │
+│  └─────────────────────────────────────┘                         │
+│      │                                                            │
+│      ├────────────────────┬────────────────────┐                 │
+│      ▼                    ▼                    │                 │
+│  ┌─────────────┐    ┌─────────────────┐       │                 │
+│  │ Qwen2.5-7B  │    │ Qwen2.5-72B     │       │                 │
+│  │ -Safe/AWQ   │    │ -Instruct/AWQ   │       │                 │
+│  │ (快速判定)   │    │ (复杂审计)       │       │                 │
+│  │ 处理 90%    │    │ 处理 10%         │       │                 │
+│  │ 16GB VRAM   │    │ 2x48GB VRAM      │       │                 │
+│  └─────────────┘    └─────────────────┘       │                 │
+│      │                    │                    │                 │
+│      └────────────────────┴────────────────────┘                 │
+│                           │                                       │
+│                           ▼                                       │
+│                    转发到下游 LLM                                  │
+│                                                                   │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### 离线部署关键修改
+
+#### 1. 模型选型：优先使用专用安全模型
+
+**推荐配置**：
+
+| 场景 | 主模型（90%请求） | 备用模型（10%请求） | 总显存需求 |
+|------|------------------|-------------------|-----------|
+| 标准配置 | Qwen2.5-7B-Instruct-AWQ | - | 8GB |
+| 推荐配置 | Qwen2.5-7B-Safe-AWQ | Qwen2.5-14B-Instruct-AWQ | 16GB |
+| 高安全配置 | Qwen2.5-14B-Safe-AWQ | Qwen2.5-72B-Instruct-AWQ | 48GB |
+
+**为什么 7B 专用安全模型优于 72B 通用模型**：
+
+```
+专用安全模型（如 Qwen2.5-7B-Safe）：
+✅ 经过大量"越狱提示词"和"攻击样本"针对性训练
+✅ 在安全判定任务上表现往往优于 72B 通用模型
+✅ 节省 10 倍以上显存
+✅ 推理速度快 5-10 倍
+
+通用模型（如 Qwen2.5-72B-Instruct）：
+✅ 复杂语义理解更强
+❌ 安全专项训练不足
+❌ 资源消耗大
+```
+
+#### 2. 推理后端：TensorRT-LLM 量化部署
+
+离线环境无法动态调用云端算力，必须最大化本地 GPU 性能。
+
+**从 vLLM 切换到 TensorRT-LLM**：
+
+```bash
+# 安装 TensorRT-LLM
+pip install tensorrt-llm
+
+# 下载 AWQ 量化模型（需提前在有网环境准备）
+# 或自行量化：
+python -m tensorrt_llm.tools.quantize \
+    --model_dir /models/Qwen2.5-7B-Instruct \
+    --output_dir /models/Qwen2.5-7B-Instruct-awq \
+    --qformat awq \
+    --calib_size 512
+
+# 启动推理服务
+python -m tensorrt_llm.run \
+    --model_dir /models/Qwen2.5-7B-Instruct-awq \
+    --port 8000
+```
+
+**TensorRT-LLM 优势**：
+
+| 特性 | vLLM | TensorRT-LLM |
+|------|------|--------------|
+| 吞吐量 | 基准 | 提升 2-3x |
+| AWQ 4-bit 量化 | 支持 | 原生优化 |
+| 显存效率 | 基准 | 提升 30% |
+| 流水线并行 | 有限支持 | 完整支持 |
+
+**AWQ 量化后显存需求**：
+
+| 模型 | FP16 | AWQ 4-bit | 压缩比 |
+|------|------|-----------|--------|
+| Qwen2.5-7B | 14GB | 4GB | 3.5x |
+| Qwen2.5-14B | 28GB | 8GB | 3.5x |
+| Qwen2.5-32B | 64GB | 18GB | 3.5x |
+| Qwen2.5-72B | 144GB | 40GB | 3.6x |
+
+#### 3. 第一层规则检测：完全离线化
+
+```python
+# 离线 PII 检测配置
+OFFLINE_PII_CONFIG = {
+    # 正则库：从本地 JSON 加载
+    "regex_patterns": "/app/configs/regex_patterns.json",
+    
+    # NER 模型：使用本地 spaCy 或 LTP
+    "ner_backend": "spacy",  # 或 "ltp"
+    "spacy_model": "/app/models/zh_core_web_sm",  # 本地路径
+    "ltp_model": "/app/models/ltp_base",
+    
+    # 敏感词库：本地维护
+    "sensitive_words": "/app/configs/sensitive_words.txt",
+    
+    # 禁用所有网络请求
+    "offline_mode": True
+}
+```
+
+**NER 离线部署（替代简单正则）**：
+
+```python
+# 使用 spaCy 离线模型
+import spacy
+
+# 加载本地模型（需提前下载）
+nlp = spacy.load("/app/models/zh_core_web_sm")
+
+def detect_entities_offline(text: str) -> list:
+    """离线命名实体识别"""
+    doc = nlp(text)
+    entities = []
+    for ent in doc.ents:
+        entities.append({
+            "text": ent.text,
+            "label": ent.label_,
+            "start": ent.start_char,
+            "end": ent.end_char
+        })
+    return entities
+```
+
+**或使用 LTP（哈工大语言技术平台）**：
+
+```python
+from ltp import LTP
+
+# 加载本地模型
+ltp = LTP(path="/app/models/ltp_base")
+
+def detect_entities_ltp(text: str) -> list:
+    """LTP 离线 NER"""
+    output = ltp.pipeline([text], tasks=["ner"])
+    return output.ner
+```
+
+#### 4. 模型路由实现
+
+```python
+# gateway/model_router.py
+
+from dataclasses import dataclass
+from typing import Tuple, Optional
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class RouterDecision:
+    """路由决策"""
+    use_large_model: bool
+    reason: str
+    confidence_threshold: float
+
+
+class ModelRouter:
+    """
+    模型分级路由
+    
+    策略：
+    - 90% 请求由小模型（7B）处理
+    - 10% 复杂/可疑请求路由到大模型
+    """
+    
+    def __init__(
+        self,
+        confidence_threshold: float = 0.7,
+        suspicious_keywords: list = None,
+        always_use_large_for_sensitive: bool = True
+    ):
+        self.confidence_threshold = confidence_threshold
+        self.suspicious_keywords = suspicious_keywords or [
+            "忽略", "绕过", "假装", "扮演", "越狱",
+            "ignore", "bypass", "jailbreak", "pretend"
+        ]
+        self.always_use_large_for_sensitive = always_use_large_for_sensitive
+        self.sensitive_categories = {"violence", "illegal", "fraud"}
+    
+    def route(
+        self,
+        text: str,
+        small_model_result: Optional[dict] = None,
+        context: Optional[str] = None
+    ) -> RouterDecision:
+        """
+        决定使用哪个模型
+        
+        Args:
+            text: 待检测文本
+            small_model_result: 小模型的初步检测结果（如有）
+            context: 对话上下文
+        
+        Returns:
+            RouterDecision: 路由决策
+        """
+        # 规则 1：显式可疑关键词 → 大模型
+        if self._has_suspicious_keywords(text):
+            return RouterDecision(
+                use_large_model=True,
+                reason="detected suspicious keywords",
+                confidence_threshold=self.confidence_threshold
+            )
+        
+        # 规则 2：多轮对话上下文 → 大模型
+        if context and len(context) > 500:
+            return RouterDecision(
+                use_large_model=True,
+                reason="complex multi-turn context",
+                confidence_threshold=self.confidence_threshold
+            )
+        
+        # 规则 3：基于小模型结果的置信度
+        if small_model_result:
+            confidence = small_model_result.get("confidence", 1.0)
+            
+            # 置信度低 → 大模型复核
+            if confidence < self.confidence_threshold:
+                return RouterDecision(
+                    use_large_model=True,
+                    reason=f"low confidence: {confidence}",
+                    confidence_threshold=self.confidence_threshold
+                )
+            
+            # 敏感类别且配置严格 → 大模型复核
+            if self.always_use_large_for_sensitive:
+                categories = small_model_result.get("risk_categories", [])
+                if self.sensitive_categories & set(categories):
+                    return RouterDecision(
+                        use_large_model=True,
+                        reason="sensitive category detected",
+                        confidence_threshold=self.confidence_threshold
+                    )
+        
+        # 默认：使用小模型
+        return RouterDecision(
+            use_large_model=False,
+            reason="standard request",
+            confidence_threshold=self.confidence_threshold
+        )
+    
+    def _has_suspicious_keywords(self, text: str) -> bool:
+        """检测可疑关键词"""
+        text_lower = text.lower()
+        return any(kw in text_lower for kw in self.suspicious_keywords)
+```
+
+#### 5. 离线部署配置
+
+```yaml
+# configs/offline_gateway.yaml
+
+# 离线模式标识
+offline_mode: true
+
+# 模型配置（本地路径）
+models:
+  # 主模型（处理 90% 请求）
+  primary:
+    path: /models/Qwen2.5-7B-Instruct-awq
+    type: tensorrt_llm
+    quantization: awq_4bit
+    port: 8001
+  
+  # 备用模型（处理复杂请求）
+  secondary:
+    enabled: true
+    path: /models/Qwen2.5-14B-Instruct-awq
+    type: tensorrt_llm
+    quantization: awq_4bit
+    port: 8002
+
+# 模型路由配置
+router:
+  confidence_threshold: 0.7
+  suspicious_keywords_file: /app/configs/suspicious_keywords.txt
+  always_use_large_for_sensitive: true
+
+# PII 检测配置（完全离线）
+pii_detection:
+  enabled: true
+  offline_mode: true
+  regex_patterns: /app/configs/regex_patterns.json
+  ner_backend: spacy  # 或 ltp
+  spacy_model: /app/models/zh_core_web_sm
+  sensitive_words: /app/configs/sensitive_words.txt
+
+# 日志配置（内网闭环）
+logging:
+  level: INFO
+  format: json
+  # 输出到本地 ELK
+  output: /var/log/gateway/judge.log
+  elk_endpoint: http://elk.internal:9200
+
+# 禁用所有外部网络请求
+network:
+  allow_external: false
+  proxy: null
+```
+
+#### 6. 容器化打包
+
+```dockerfile
+# Dockerfile.offline
+FROM nvidia/cuda:12.1.0-base-ubuntu22.04
+
+# 设置离线模式
+ENV OFFLINE_MODE=true
+ENV TRANSFORMERS_OFFLINE=1
+ENV HF_DATASETS_OFFLINE=1
+
+# 复制预下载的模型和依赖
+COPY models/ /models/
+COPY wheels/ /wheels/
+COPY configs/ /app/configs/
+
+# 离线安装 Python 依赖
+RUN pip install --no-index --find-links=/wheels/ \
+    torch tensorrt-llm fastapi uvicorn httpx pydantic pyyaml
+
+# 复制应用代码
+COPY gateway/ /app/gateway/
+COPY chinese_pii_recognizers.py /app/
+COPY chinese_guardrail.py /app/
+
+WORKDIR /app
+
+# 启动命令
+CMD ["python", "-m", "gateway.main"]
+```
+
+**构建离线镜像**：
+
+```bash
+# 1. 在有网环境准备依赖
+mkdir -p wheels models
+
+# 下载 Python 包
+pip download -r requirements.txt -d wheels/
+
+# 下载模型（提前量化）
+huggingface-cli download Qwen/Qwen2.5-7B-Instruct --local-dir models/Qwen2.5-7B-Instruct
+
+# 下载 spaCy 模型
+python -m spacy download zh_core_web_sm -d models/
+
+# 2. 构建镜像
+docker build -f Dockerfile.offline -t guardrails-offline:latest .
+
+# 3. 导出镜像（传输到离线环境）
+docker save guardrails-offline:latest | gzip > guardrails-offline.tar.gz
+
+# 4. 在离线环境加载
+docker load < guardrails-offline.tar.gz
+```
+
+#### 7. Docker Compose 离线部署
+
+```yaml
+# docker-compose.offline.yml
+version: '3.8'
+
+services:
+  # Gateway 服务
+  gateway:
+    image: guardrails-offline:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./configs:/app/configs
+      - ./logs:/var/log/gateway
+    environment:
+      - OFFLINE_MODE=true
+      - JUDGE_PRIMARY_ENDPOINT=http://judge-primary:8001/v1/chat/completions
+      - JUDGE_SECONDARY_ENDPOINT=http://judge-secondary:8002/v1/chat/completions
+    depends_on:
+      - judge-primary
+      - judge-secondary
+    networks:
+      - internal
+
+  # 主模型（7B AWQ）
+  judge-primary:
+    image: guardrails-offline:latest
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./models/Qwen2.5-7B-Instruct-awq:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command: >
+      python -m tensorrt_llm.run
+      --model_dir /models
+      --port 8001
+    networks:
+      - internal
+
+  # 备用模型（14B AWQ，可选）
+  judge-secondary:
+    image: guardrails-offline:latest
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./models/Qwen2.5-14B-Instruct-awq:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command: >
+      python -m tensorrt_llm.run
+      --model_dir /models
+      --port 8002
+    networks:
+      - internal
+
+  # 内网 ELK 日志系统（可选）
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+    volumes:
+      - elk-data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    networks:
+      - internal
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.0
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    depends_on:
+      - elasticsearch
+    networks:
+      - internal
+
+networks:
+  internal:
+    driver: bridge
+    internal: true  # 禁止外部网络访问
+
+volumes:
+  elk-data:
+```
+
+### 离线部署硬件需求（AWQ 量化后）
+
+| 配置级别 | GPU 配置 | 支持模型 | 并发能力 | 适用场景 |
+|---------|---------|---------|---------|---------|
+| 入门级 | RTX 3060 12GB | 7B-AWQ | 5-10 QPS | 小团队 |
+| 标准级 | RTX 4090 24GB | 7B-AWQ + 14B-AWQ | 15-25 QPS | 中型企业 |
+| 企业级 | A100 40GB | 14B-AWQ + 32B-AWQ | 30-50 QPS | 大型企业 |
+| 高性能 | 2x A100 80GB | 72B-AWQ + 32B-AWQ | 50-100 QPS | 金融/政务 |
+
+---
+
 ## 模型选择
 
 ### 推荐方案：Qwen2.5 系列
@@ -73,6 +593,41 @@
 | Qwen2.5-14B-Instruct | 14B | 24GB VRAM | ⭐⭐⭐⭐⭐ | 中 | 高准确率要求 |
 | Qwen2.5-32B-Instruct | 32B | 48GB VRAM | ⭐⭐⭐⭐⭐ | 慢 | 极高准确率要求 |
 | Qwen2.5-72B-Instruct | 72B | 2x48GB VRAM | ⭐⭐⭐⭐⭐ | 慢 | 企业级部署 |
+
+### 专用安全模型（推荐用于 Guardrail）
+
+如果追求更专业的安全检测能力，可使用专用安全模型：
+
+| 模型 | 来源 | 中文能力 | 说明 |
+|------|------|---------|------|
+| **Qwen2.5-7B-Safe** | 阿里巴巴 | ⭐⭐⭐⭐⭐ | 专用安全模型，针对越狱攻击训练 |
+| Llama Guard 3-8B | Meta | ⭐⭐ | 专业安全模型，英文为主 |
+| ShieldGemma-2B/9B | Google | ⭐⭐ | 轻量安全模型，英文为主 |
+
+**为什么专用安全模型更好**：
+
+```
+通用模型（如 Qwen2.5-7B-Instruct）：
+✅ 通用对话能力强
+✅ 中文能力顶尖
+❌ 未针对安全检测专项训练
+❌ 对隐晦攻击可能漏检
+
+专用安全模型（如 Qwen2.5-7B-Safe）：
+✅ 针对大量攻击样本训练
+✅ 对越狱、提示注入检测更准确
+✅ 输出格式更稳定
+✅ 同等参数下安全检测准确率更高
+```
+
+### 离线部署模型推荐
+
+| 场景 | 推荐配置 | 说明 |
+|------|---------|------|
+| 资源有限 | Qwen2.5-7B-Instruct-AWQ | 单卡 8GB，够用 |
+| 标准配置 | Qwen2.5-7B-Safe-AWQ | 专用安全模型，性价比最优 |
+| 高安全要求 | Qwen2.5-7B-Safe + Qwen2.5-14B-Instruct | 双模型路由 |
+| 最高安全 | Qwen2.5-14B-Safe + Qwen2.5-72B-Instruct | 复杂审计能力 |
 
 ### 为什么选择 Qwen
 
@@ -611,9 +1166,41 @@ class ProxyHandler:
 
 ## 部署方案
 
-### 方案一：vLLM 部署（推荐）
+### 方案一：TensorRT-LLM 部署（推荐离线环境）
 
-vLLM 是目前最高效的 LLM 推理框架：
+TensorRT-LLM 是 NVIDIA 推出的高性能推理框架，适合离线部署：
+
+```bash
+# 安装 TensorRT-LLM
+pip install tensorrt-llm
+
+# 方式一：直接使用 AWQ 量化模型
+python -m tensorrt_llm.run \
+    --model_dir /models/Qwen2.5-7B-Instruct-awq \
+    --port 8000
+
+# 方式二：自行量化（在有网环境预先完成）
+python -m tensorrt_llm.tools.quantize \
+    --model_dir /models/Qwen2.5-7B-Instruct \
+    --output_dir /models/Qwen2.5-7B-Instruct-awq \
+    --qformat awq \
+    --calib_size 512
+```
+
+**TensorRT-LLM vs vLLM**：
+
+| 特性 | vLLM | TensorRT-LLM |
+|------|------|--------------|
+| 吞吐量 | 基准 | 提升 2-3x |
+| 延迟 | 基准 | 降低 30-50% |
+| 显存效率 | 基准 | 提升 30% |
+| AWQ 量化 | 支持 | 原生优化 |
+| 离线部署 | 支持 | 更优 |
+| 部署复杂度 | 简单 | 中等 |
+
+### 方案二：vLLM 部署（简单快速）
+
+vLLM 部署简单，适合快速验证：
 
 ```bash
 # 安装 vLLM
@@ -627,16 +1214,30 @@ python -m vllm.entrypoints.openai.api_server \
     --trust-remote-code \
     --gpu-memory-utilization 0.9
 
-# 启动服务（单卡 24GB，可运行 14B）
+# 离线模式启动（从本地加载）
 python -m vllm.entrypoints.openai.api_server \
-    --model Qwen/Qwen2.5-14B-Instruct \
+    --model /models/Qwen2.5-7B-Instruct \
     --host 0.0.0.0 \
     --port 8000 \
     --trust-remote-code \
     --gpu-memory-utilization 0.9
 ```
 
-### 方案二：Ollama 部署（简单）
+**vLLM 离线模式设置**：
+
+```bash
+# 设置环境变量禁用网络请求
+export TRANSFORMERS_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
+export HF_HUB_OFFLINE=1
+
+# 启动时指定本地模型路径
+python -m vllm.entrypoints.openai.api_server \
+    --model /models/Qwen2.5-7B-Instruct \
+    ...
+```
+
+### 方案三：Ollama 部署（最简单）
 
 ```bash
 # 安装 Ollama
@@ -645,12 +1246,17 @@ curl -fsSL https://ollama.com/install.sh | sh
 # 拉取模型
 ollama pull qwen2.5:7b
 
+# 离线模式：从本地导入
+ollama create qwen2.5-7b -f Modelfile
+# Modelfile 内容：
+# FROM /models/Qwen2.5-7B-Instruct
+
 # 启动服务
 ollama serve
 # 默认端口 11434，OpenAI 兼容接口在 /v1
 ```
 
-### 方案三：Docker Compose 完整部署
+### 方案四：Docker Compose 完整部署（离线版）
 
 ```yaml
 # docker-compose.yml
@@ -1044,20 +1650,48 @@ class JudgeLogger:
 |------|------|
 | **双层防护** | 规则检测快速精准 + Judge 语义理解 |
 | **私有部署** | 数据不出域，满足合规要求 |
+| **离线支持** | 完全离线运行，无网络依赖 |
 | **中文优化** | Qwen2.5 中文能力顶尖 |
+| **资源高效** | AWQ 量化 + 模型路由，节省 90% 算力 |
 | **可扩展** | 模块化设计，易于添加新检测能力 |
 
-### 实施建议
+### 离线部署实施建议
 
-1. **Phase 1**：部署 Qwen2.5-7B + 集成基础 Judge 模块
-2. **Phase 2**：调优提示词，适配业务场景
-3. **Phase 3**：添加缓存、分级检测等优化
-4. **Phase 4**：持续监控，迭代优化模型
+1. **Phase 1**：准备离线资源
+   - 下载模型并 AWQ 量化
+   - 打包 Python 依赖到 wheels/
+   - 准备 spaCy/LTP 离线模型
+   - 构建 Docker 镜像
 
-### 资源需求
+2. **Phase 2**：部署核心服务
+   - 部署 TensorRT-LLM 推理服务
+   - 配置 PII 规则检测
+   - 集成 Judge 模块
 
-| 组件 | GPU | 月成本估算 |
-|------|-----|-----------|
-| Qwen2.5-7B | 16GB VRAM | $200-400（云 GPU） |
-| Qwen2.5-14B | 24GB VRAM | $400-800（云 GPU） |
-| 自有硬件 | RTX 4090 | 一次性采购 |
+3. **Phase 3**：优化与测试
+   - 添加模型路由（如需双模型）
+   - 调优提示词
+   - 性能压测
+
+4. **Phase 4**：运维监控
+   - 部署内网 ELK 日志
+   - 持续监控，迭代优化
+
+### 资源需求（AWQ 量化后）
+
+| 配置 | GPU | 模型支持 | 月成本估算 |
+|------|-----|---------|-----------|
+| 入门 | RTX 3060 12GB | 7B-AWQ | 自有硬件 |
+| 标准 | RTX 4090 24GB | 7B-AWQ + 14B-AWQ | 自有硬件 |
+| 企业 | A100 40GB | 14B-AWQ + 32B-AWQ | 自有硬件 |
+
+### 离线部署检查清单
+
+- [ ] 模型文件已下载至本地
+- [ ] AWQ 量化已完成
+- [ ] Python 依赖已打包（wheels/）
+- [ ] spaCy/LTP 中文模型已下载
+- [ ] Docker 镜像已构建
+- [ ] 配置文件已更新为本地路径
+- [ ] 环境变量已设置离线模式
+- [ ] 内网日志系统已部署（可选）
