@@ -44,18 +44,17 @@ else
 fi
 
 # 构建环境变量参数
+# 从配置文件中自动提取 ${VAR_NAME} 格式的环境变量名
 ENV_VARS=""
-if [ -n "$OPENAI_API_KEY" ]; then
-    ENV_VARS="${ENV_VARS} -e OPENAI_API_KEY=${OPENAI_API_KEY}"
-fi
-if [ -n "$ANTHROPIC_API_KEY" ]; then
-    ENV_VARS="${ENV_VARS} -e ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}"
-fi
-if [ -n "$AZURE_OPENAI_KEY" ]; then
-    ENV_VARS="${ENV_VARS} -e AZURE_OPENAI_KEY=${AZURE_OPENAI_KEY}"
-fi
-if [ -n "$AZURE_OPENAI_ENDPOINT" ]; then
-    ENV_VARS="${ENV_VARS} -e AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}"
+if [ -f "${CONFIG_FILE}" ]; then
+    # 提取所有 ${VAR_NAME} 格式的变量名
+    VAR_NAMES=$(grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' "${CONFIG_FILE}" | sed 's/[${}]//g' | sort -u)
+    for var_name in $VAR_NAMES; do
+        var_value="${!var_name}"
+        if [ -n "$var_value" ]; then
+            ENV_VARS="${ENV_VARS} -e ${var_name}=${var_value}"
+        fi
+    done
 fi
 
 echo ""
