@@ -6,6 +6,7 @@ LLM Guard Gateway - FastAPI主应用
 - Claude API格式 (/v1/messages)
 - SSE流式响应
 - PII内容过滤
+- Layer 2 实时裁判（Judge）
 """
 
 import logging
@@ -21,6 +22,12 @@ from fastapi.middleware.gzip import GZipMiddleware
 from .config import load_config, GatewayConfig
 from .proxy import ProxyHandler
 from .models import HealthResponse
+from .exceptions import (
+    ContentRiskException,
+    JudgeTimeoutException,
+    JudgeUnavailableException,
+    StreamInterruptException,
+)
 
 # 配置日志
 logging.basicConfig(
@@ -234,6 +241,92 @@ async def global_exception_handler(request: Request, exc: Exception):
             "error": {
                 "message": "Internal server error",
                 "type": "internal_error",
+            }
+        }
+    )
+
+
+@app.exception_handler(ContentRiskException)
+async def content_risk_exception_handler(request: Request, exc: ContentRiskException):
+    """内容风险异常处理 - 返回详细的风险信息"""
+    logger.warning(f"Content risk detected: {exc.result.risk_level} - {exc.result.reason}")
+
+    # 根据风险等级决定 HTTP 状态码
+    status_code = 400 if exc.result.risk_level in ["low", "medium"] else 403
+
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "error": {
+                "type": "content_policy_violation",
+                "message": "您的内容触发安全策略限制，请修改后重试。",
+                "details": {
+                    "risk_level": exc.result.risk_level,
+                    "risk_categories": exc.result.risk_categories,
+                    "confidence": round(exc.result.confidence, 2),
+                    "reason": exc.result.reason,
+                },
+                "suggestion": "请检查内容是否包含敏感信息或违规表述，修改后重新提交。"
+            }
+        }
+    )
+
+
+@app.exception_handler(JudgeTimeoutException)
+async def judge_timeout_exception_handler(request: Request, exc: JudgeTimeoutException):
+    """Judge 服务超时异常处理"""
+    logger.warning(f"Judge timeout: {exc.endpoint}")
+
+    return JSONResponse(
+        status_code=504,
+        content={
+            "error": {
+                "type": "judge_timeout",
+                "message": "安全审核服务响应超时，请稍后重试。",
+                "details": {
+                    "timeout_seconds": exc.timeout,
+                    "endpoint": exc.endpoint,
+                }
+            }
+        }
+    )
+
+
+@app.exception_handler(JudgeUnavailableException)
+async def judge_unavailable_exception_handler(request: Request, exc: JudgeUnavailableException):
+    """Judge 服务不可用异常处理"""
+    logger.error(f"Judge unavailable: {exc.endpoint} - {exc.reason}")
+
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": {
+                "type": "judge_unavailable",
+                "message": "安全审核服务暂时不可用，请稍后重试。",
+                "details": {
+                    "endpoint": exc.endpoint,
+                    "reason": exc.reason,
+                }
+            }
+        }
+    )
+
+
+@app.exception_handler(StreamInterruptException)
+async def stream_interrupt_exception_handler(request: Request, exc: StreamInterruptException):
+    """流式输出中断异常处理"""
+    logger.warning(f"Stream interrupted: {exc.reason}")
+
+    return JSONResponse(
+        status_code=200,  # 流式响应已部分发送，返回 200
+        content={
+            "error": {
+                "type": "stream_interrupted",
+                "message": "输出内容触发安全策略，已中断。",
+                "details": {
+                    "reason": exc.reason,
+                    "partial_content_length": len(exc.partial_content),
+                }
             }
         }
     )

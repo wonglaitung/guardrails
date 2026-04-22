@@ -2,6 +2,7 @@
 代理核心模块
 
 处理请求转发、PII过滤和响应处理。
+支持 Layer 1 (PII规则检测) 和 Layer 2 (LLM Judge实时裁判)。
 """
 
 import json
@@ -12,6 +13,9 @@ import httpx
 from chinese_guardrail import UniversalPIIGuardrail
 from .config import GatewayConfig, ModelConfig
 from .stream_handler import SSEHandler
+from .judge import ComplianceJudge
+from .stream_interceptor import StreamInterceptor
+from .exceptions import ContentRiskException, JudgeResult
 
 logger = logging.getLogger(__name__)
 
@@ -29,11 +33,22 @@ class ProxyHandler:
             timeout=httpx.Timeout(config.models.get("default", ModelConfig(name="default", base_url="")).timeout),
             http2=True,
         )
+
+        # Layer 2: 初始化 Judge 模块
+        self.judge: Optional[ComplianceJudge] = None
+        self.interceptor: Optional[StreamInterceptor] = None
+
+        if config.judge.enabled:
+            self.judge = ComplianceJudge(config.judge)
+            if config.judge.stream_intercept.enabled:
+                self.interceptor = StreamInterceptor(self.judge, config.judge.stream_intercept)
+            logger.info("Layer 2 Judge enabled")
+
         logger.info("ProxyHandler initialized")
 
     async def filter_request(self, body: Dict[str, Any], client_info: Optional[str] = None) -> Dict[str, Any]:
         """
-        过滤请求中的PII
+        过滤请求中的PII并进行Judge安全检测
 
         Args:
             body: 请求体
@@ -41,41 +56,70 @@ class ProxyHandler:
 
         支持OpenAI和Claude格式的消息。
         """
-        if not self.config.filter.enabled:
+        if not self.config.filter.enabled and not self.judge:
             return body
 
         filtered_body = body.copy()
         client_str = f"[Client: {client_info}] " if client_info else ""
 
-        # 处理 OpenAI 格式 /v1/chat/completions
-        if "messages" in filtered_body:
-            messages = filtered_body["messages"]
-            for msg in messages:
-                if isinstance(msg, dict) and "content" in msg:
-                    content = msg["content"]
-                    if isinstance(content, str):
-                        # 检测并记录PII
-                        entities = self.guardrail.detect(content)
-                        if entities:
-                            logger.warning(f"[PII Detected] {client_str}Request contains {len(entities)} PII entities: {[f'{e.entity_type}({e.text})' for e in entities]}")
-                        msg["content"] = self.guardrail.redact(content)
-                    elif isinstance(content, list):
-                        # 处理多模态内容
-                        for item in content:
-                            if isinstance(item, dict) and item.get("type") == "text":
-                                text = item.get("text", "")
-                                entities = self.guardrail.detect(text)
-                                if entities:
-                                    logger.warning(f"[PII Detected] {client_str}Request contains {len(entities)} PII entities: {[f'{e.entity_type}({e.text})' for e in entities]}")
-                                item["text"] = self.guardrail.redact(text)
+        # Layer 1: PII 过滤
+        if self.config.filter.enabled:
+            # 处理 OpenAI 格式 /v1/chat/completions
+            if "messages" in filtered_body:
+                messages = filtered_body["messages"]
+                for msg in messages:
+                    if isinstance(msg, dict) and "content" in msg:
+                        content = msg["content"]
+                        if isinstance(content, str):
+                            # 检测并记录PII
+                            entities = self.guardrail.detect(content)
+                            if entities:
+                                logger.warning(f"[PII Detected] {client_str}Request contains {len(entities)} PII entities: {[f'{e.entity_type}({e.text})' for e in entities]}")
+                            msg["content"] = self.guardrail.redact(content)
+                        elif isinstance(content, list):
+                            # 处理多模态内容
+                            for item in content:
+                                if isinstance(item, dict) and item.get("type") == "text":
+                                    text = item.get("text", "")
+                                    entities = self.guardrail.detect(text)
+                                    if entities:
+                                        logger.warning(f"[PII Detected] {client_str}Request contains {len(entities)} PII entities: {[f'{e.entity_type}({e.text})' for e in entities]}")
+                                    item["text"] = self.guardrail.redact(text)
 
-        # 处理 Claude 格式 /v1/messages
-        if "prompt" in filtered_body:
-            content = filtered_body["prompt"]
-            entities = self.guardrail.detect(content)
-            if entities:
-                logger.warning(f"[PII Detected] {client_str}Request contains {len(entities)} PII entities: {[f'{e.entity_type}({e.text})' for e in entities]}")
-            filtered_body["prompt"] = self.guardrail.redact(content)
+            # 处理 Claude 格式 /v1/messages
+            if "prompt" in filtered_body:
+                content = filtered_body["prompt"]
+                entities = self.guardrail.detect(content)
+                if entities:
+                    logger.warning(f"[PII Detected] {client_str}Request contains {len(entities)} PII entities: {[f'{e.entity_type}({e.text})' for e in entities]}")
+                filtered_body["prompt"] = self.guardrail.redact(content)
+
+        # Layer 2: Judge 安全检测
+        if self.judge:
+            user_message = self._extract_user_message(filtered_body)
+            if user_message:
+                try:
+                    result = await self.judge.judge(user_message)
+
+                    if not result.is_safe and result.risk_level in ["high", "critical"]:
+                        logger.warning(
+                            f"[Judge] {client_str}High risk content detected: "
+                            f"risk_level={result.risk_level}, categories={result.risk_categories}"
+                        )
+                        raise ContentRiskException(result)
+
+                    logger.info(
+                        f"[Judge] {client_str}Content check passed: "
+                        f"risk_level={result.risk_level}, confidence={result.confidence:.2f}"
+                    )
+
+                except ContentRiskException:
+                    raise
+                except Exception as e:
+                    logger.warning(f"[Judge] Check failed: {e}")
+                    # 根据 timeout_action 决定是否阻断
+                    if self.config.judge.timeout_action == "block":
+                        raise
 
         return filtered_body
 
@@ -169,6 +213,7 @@ class ProxyHandler:
 
                     # 处理 SSE 格式
                     if line.startswith("data: "):
+                        # PII 过滤
                         filtered_line = await self.sse_handler.filter_sse_line(line)
                         yield filtered_line
                     else:
@@ -191,6 +236,35 @@ class ProxyHandler:
         # 未找到匹配的配置
         logger.error(f"Unknown model: {model_name}. Available models: {list(self.config.models.keys())}")
         raise ValueError(f"Unknown model: {model_name}")
+
+    def _extract_user_message(self, body: Dict[str, Any]) -> Optional[str]:
+        """
+        从请求体中提取用户消息
+
+        支持 OpenAI 和 Claude 格式。
+        """
+        # OpenAI 格式
+        if "messages" in body:
+            messages = body["messages"]
+            # 获取最后一条用户消息
+            for msg in reversed(messages):
+                if isinstance(msg, dict) and msg.get("role") == "user":
+                    content = msg.get("content")
+                    if isinstance(content, str):
+                        return content
+                    elif isinstance(content, list):
+                        # 多模态消息，提取文本部分
+                        texts = []
+                        for item in content:
+                            if isinstance(item, dict) and item.get("type") == "text":
+                                texts.append(item.get("text", ""))
+                        return " ".join(texts)
+
+        # Claude 格式
+        if "prompt" in body:
+            return body["prompt"]
+
+        return None
 
     def _get_api_path(self, body: Dict[str, Any], api_type: str) -> str:
         """根据请求体确定API路径 - 只拼接 endpoint，版本号由 base_url 包含"""
@@ -281,5 +355,7 @@ class ProxyHandler:
         return filtered
 
     async def close(self):
-        """关闭HTTP客户端"""
+        """关闭HTTP客户端和Judge客户端"""
         await self.client.aclose()
+        if self.judge:
+            await self.judge.close()

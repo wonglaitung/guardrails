@@ -21,3 +21,6 @@ pydantic-settings>=2.1.0
 pyyaml>=6.0.1
 python-multipart>=0.0.6
 python-dotenv>=1.0.0
+
+# Judge 缓存（可选，用于 Layer 2 结果缓存）
+cachetools>=5.3.0
