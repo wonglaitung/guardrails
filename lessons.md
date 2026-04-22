@@ -1,5 +1,181 @@
 # 经验教训
 
+## 可选依赖降级设计
+
+### 问题：可选功能依赖未安装的库
+
+**现象**：
+用户未安装 `cachetools`，但代码直接导入导致崩溃。
+
+**不好的实现**：
+```python
+from cachetools import TTLCache  # ❌ 未安装时直接报错
+
+class ComplianceJudge:
+    def __init__(self):
+        self.cache = TTLCache(maxsize=1000, ttl=300)
+```
+
+**好的实现**：
+```python
+try:
+    from cachetools import TTLCache
+    HAS_CACHE = True
+except ImportError:
+    HAS_CACHE = False
+    TTLCache = None
+
+class ComplianceJudge:
+    def __init__(self):
+        if HAS_CACHE:
+            self._cache = TTLCache(maxsize=1000, ttl=300)
+            logger.info("Judge cache enabled")
+        else:
+            self._cache = None
+            logger.warning("cachetools not installed, cache disabled")
+
+    async def judge(self, content: str) -> JudgeResult:
+        # 使用前检查
+        if self._cache is not None and cache_key in self._cache:
+            return self._cache[cache_key]
+        # ... 正常逻辑
+```
+
+**教训**：
+1. 可选功能用 `try/except ImportError` 捕获，而非假定已安装
+2. 运行时检查 `if HAS_CACHE` 而非导入时决定
+3. 日志提示用户功能可用性，方便排查
+
+---
+
+## 缓存设计：键生成与冲突避免
+
+### 问题：不同内容生成相同缓存键
+
+**场景**：
+- `judge(content="你好")` 返回缓存结果
+- `judge(content="你好", context="上下文")` 应该是不同结果
+
+**解决方案**：
+```python
+def _make_cache_key(self, content: str, context: Optional[str] = None) -> str:
+    """生成缓存键 - 包含所有影响结果的因素"""
+    key_data = f"{content}||{context or ''}"
+    return hashlib.sha256(key_data.encode('utf-8')).hexdigest()
+```
+
+**教训**：
+1. 缓存键必须包含所有影响结果的参数
+2. 使用分隔符 `||` 防止 `"a||b"` 和 `"a|"` + `"b"` 冲突
+3. 哈希（SHA256）可以处理任意长内容，避免键过长
+
+---
+
+## 异常处理：用户友好 vs 开发友好
+
+### 问题：内部异常直接暴露给用户
+
+**不好的实现**：
+```python
+# 用户看到的技术错误
+{
+  "error": {
+    "message": "Internal server error",
+    "type": "internal_error"
+  }
+}
+```
+
+**好的实现**：
+```python
+@app.exception_handler(ContentRiskException)
+async def content_risk_handler(request, exc):
+    return JSONResponse(
+        status_code=403,
+        content={
+            "error": {
+                "type": "content_policy_violation",
+                "message": "您的内容触发安全策略限制，请修改后重试。",
+                "details": {
+                    "risk_level": exc.result.risk_level,
+                    "risk_categories": exc.result.risk_categories,
+                    "confidence": exc.result.confidence,
+                },
+                "suggestion": "请检查内容是否包含敏感信息或违规表述。"
+            }
+        }
+    )
+```
+
+**教训**：
+1. 用户消息：中文、友好、可操作
+2. 开发调试：details 字段包含技术细节
+3. 不同异常类型使用不同 HTTP 状态码，便于监控分类
+
+### HTTP 状态码选择
+
+| 异常类型 | 状态码 | 原因 |
+|---------|-------|------|
+| ContentRiskException | 400/403 | 客户端错误，用户需修改请求 |
+| JudgeTimeoutException | 504 | 网关超时 |
+| JudgeUnavailableException | 503 | 服务暂时不可用 |
+| StreamInterruptException | 200 | 流式已部分发送 |
+
+---
+
+## 分层护栏架构设计
+
+### 架构决策
+
+```
+Layer 1: 规则检测（PII）
+  - 优势：精准、快速（<1ms）
+  - 适用：格式化数据（手机、身份证、银行卡）
+  - 实现：正则表达式 + Presidio
+
+Layer 2: 语义检测（LLM Judge）
+  - 优势：理解意图、难绕过
+  - 适用：隐晦攻击、语义操纵
+  - 实现：Qwen3Guard-8B-Stream
+
+Layer 1.5: 向量风险库（可选）
+  - 优势：历史风险记忆
+  - 适用：已知风险模式
+  - 实现：向量数据库 + 相似度匹配
+```
+
+### 执行顺序
+
+```python
+async def filter_request(self, body):
+    # Layer 1: PII 过滤（必须执行）
+    filtered_body = self._filter_pii(body)
+
+    # Layer 2: Judge 检测（可选，配置启用）
+    if self.judge:
+        result = await self.judge.judge(user_message)
+        if result.risk_level in ["high", "critical"]:
+            raise ContentRiskException(result)
+
+    return filtered_body
+```
+
+### 配置驱动
+
+```yaml
+# gateway.yaml
+judge:
+  enabled: false  # 默认关闭，按需启用
+  timeout_action: "pass"  # 超时策略：放行 vs 阻断
+```
+
+**教训**：
+1. 分层独立：Layer 1 可单独工作，Layer 2 可选增强
+2. 配置驱动：通过配置开关控制，无需改代码
+3. 优雅降级：Judge 不可用时不影响基础 PII 检测
+
+---
+
 ## Docker 脚本设计：通用优于硬编码
 
 ### 问题：硬编码环境变量名不灵活

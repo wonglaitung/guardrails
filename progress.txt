@@ -1,6 +1,47 @@
 # 项目进度记录
 
-## 2026-04-22
+## 2026-04-22 (下午)
+
+### 已完成
+- [x] Layer 2 实时裁判实现（Qwen3Guard-8B-Stream）
+  - 新增文件：`gateway/judge.py` - Judge 模块，与 Qwen3Guard 交互
+  - 新增文件：`gateway/stream_interceptor.py` - Token 级流式拦截器
+  - 新增文件：`gateway/exceptions.py` - 自定义异常类
+  - 修改文件：`gateway/config.py` - 新增 JudgeConfig、StreamInterceptConfig
+  - 修改文件：`gateway/proxy.py` - 集成 Judge 和流式拦截
+  - 修改文件：`configs/gateway.yaml` - 新增 Judge 配置段落
+
+- [x] Judge 结果缓存
+  - 使用 cachetools.TTLCache 实现
+  - 配置：TTL=300s（5分钟），最大缓存1000条
+  - `judge()` 和 `quick_check()` 方法均支持缓存
+  - 可选依赖：未安装 cachetools 时自动降级为无缓存模式
+
+- [x] 专用异常处理器
+  - `ContentRiskException` → 400/403，返回详细风险信息
+  - `JudgeTimeoutException` → 504，超时提示
+  - `JudgeUnavailableException` → 503，服务不可用提示
+  - `StreamInterruptException` → 200，流式中断提示
+  - 用户友好的中文错误消息
+
+### 当前架构
+
+```
+请求 → Layer 1 (PII规则检测) → Layer 2 (LLM Judge) → 上游服务
+              ↓                        ↓
+           PII脱敏              风险检测/流式拦截
+```
+
+### 待办
+- [ ] 台湾身份证识别器
+- [ ] 澳门身份证识别器
+- [ ] 香港车牌识别器
+- [ ] 密钥/凭证检测（可选，正则实现）
+- [ ] Layer 1.5 向量风险库（可选）
+
+---
+
+## 2026-04-22 (上午)
 
 ### 已完成
 - [x] 改进 docker-run.sh 环境变量传递

@@ -61,6 +61,41 @@ class AuthConfig(BaseModel):
     # both: 优先用配置文件的，如果没有则用客户端的
 
 
+class StreamInterceptConfig(BaseModel):
+    """流式拦截配置"""
+    enabled: bool = True
+    check_interval: int = 5  # 每 N 个 token 检测一次
+    safety_threshold: float = 0.3  # 安全分数阈值（低于此值触发熔断）
+    min_tokens_before_check: int = 10  # 开始检测前的最小 token 数
+
+    @field_validator("safety_threshold")
+    @classmethod
+    def validate_safety_threshold(cls, v):
+        if not 0 <= v <= 1:
+            raise ValueError("safety_threshold must be between 0 and 1")
+        return v
+
+
+class JudgeConfig(BaseModel):
+    """LLM Judge 配置（Layer 2 实时裁判）"""
+    enabled: bool = False
+    endpoint: str = "http://localhost:8001/v1/chat/completions"
+    model: str = "Qwen3Guard-8B-Stream"
+    timeout: float = 5.0
+    confidence_threshold: float = 0.7  # 低于此值触发深度审计
+    stream_intercept: StreamInterceptConfig = Field(default_factory=StreamInterceptConfig)
+
+    # 超时策略：timeout_action = "pass" | "block"
+    timeout_action: Literal["pass", "block"] = "pass"
+
+    @field_validator("confidence_threshold")
+    @classmethod
+    def validate_confidence_threshold(cls, v):
+        if not 0 <= v <= 1:
+            raise ValueError("confidence_threshold must be between 0 and 1")
+        return v
+
+
 class GatewayConfig(BaseModel):
     """网关主配置"""
     server: ServerConfig = Field(default_factory=ServerConfig)
@@ -68,6 +103,7 @@ class GatewayConfig(BaseModel):
     models: Dict[str, ModelConfig] = Field(default_factory=dict)
     filter: FilterConfig = Field(default_factory=FilterConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
+    judge: JudgeConfig = Field(default_factory=JudgeConfig)
 
     @field_validator("models", mode="after")
     @classmethod
