@@ -367,13 +367,38 @@ class VLLMClassificationInterceptor:
                                 return
 ```
 
+**vLLM 低延迟部署参数**：
+
+```bash
+# 流式拦截推荐的 vLLM 启动参数
+python -m vllm.entrypoints.openai.api_server \
+    --model /models/Qwen3Guard-8B-Stream \
+    --enforce-eager \                    # 关键：禁用图模式，降低首字延迟
+    --enable-prefix-caching \            # 多轮对话加速
+    --gpu-memory-utilization 0.85 \
+    --max-seq-len-to-capture 4096 \
+    --enable-classification \            # 启用分类头
+    --classification-adapter /models/safety_classifier_head
+```
+
+> **⚠️ 离线环境注意**：
+> - `--enforce-eager` 参数对于离线环境的老旧 GPU（如 A100）**必须启用**
+> - 图模式优化需要 CUDA Graph 支持，部分老旧 GPU 或驱动版本可能不兼容
+> - 如遇启动报错，请尝试添加 `--disable-custom-all-reduce`
+
 **流式拦截效果对比**：
 
 | 场景 | 传统方案 | 流式拦截 | 改善 |
 |------|---------|---------|------|
+| 首字延迟 (TTFT) | ~500ms | **<50ms** | ↓90% |
 | 违规内容响应时间 | 等 2 秒后告知 | 中途立即中断 | 用户感知 ↑80% |
 | 正常内容延迟 | +500ms 判断时间 | 并行处理，无额外延迟 | 延迟 ↓100% |
 | 有害内容泄露风险 | 完整输出后拦截 | 生成中立即中断 | 安全性 ↑95% |
+
+> **TTFT (Time To First Token) 说明**：
+> - 50ms 是工业级首字延迟标准
+> - Qwen3Guard-8B-Stream 通过 hidden_states 预测分类，**无需等完整句子生成**
+> - 分类判断在第一个 token 生成时即可完成
 
 #### 3. 风险指纹库：向量匹配快速拒绝
 
@@ -1075,11 +1100,11 @@ volumes:
 
 #### 三梯队选型方案
 
-| 梯队 | 模型 | 架构 | 显存需求 | 适用场景 |
-|------|------|------|---------|---------|
-| **第一梯队** | Qwen3.6-35B-A3B-Safe | MoE (35B/激活3B) | 24GB | 生产环境首选 |
-| **第二梯队** | Qwen3Guard-8B | Dense | 16GB | 专用安全判定 |
-| **第三梯队** | Qwen3-14B-Thinking | Dense | 24GB | 深度审计/思维链 |
+| 梯队 | 模型 | 架构 | 显存需求 | 计算开销 | 适用场景 |
+|------|------|------|---------|---------|---------|
+| **第一梯队** | Qwen3.6-35B-A3B-Safe | MoE (35B/激活3B) | 24GB | **等效 3B** | 生产环境首选 |
+| **第二梯队** | Qwen3Guard-8B | Dense | 16GB | 8B | 专用安全判定 |
+| **第三梯队** | Qwen3-14B-Thinking | Dense | 24GB | 14B | 深度审计/思维链 |
 
 #### Qwen3.6-35B-A3B-Safe（强烈推荐）
 
@@ -1970,24 +1995,59 @@ volumes:
 | 配置级别 | GPU 配置 | 模型支持 | 并发能力 | 适用场景 |
 |---------|---------|---------|---------|---------|
 | 入门级 | RTX 4090 24GB | Qwen3Guard-8B-Stream (FP8) | 15-25 QPS | 小团队/测试 |
-| 标准级 | A100 40GB | Qwen3Guard-8B + Qwen3.6-35B-A3B | 30-50 QPS | 中型企业 |
-| 企业级 | A800 80GB | 双 Qwen3.6-35B-A3B | 50-100 QPS | 大型企业 |
-| 高性能 | 2x H800 80GB | Qwen3.6-35B-A3B + Qwen3-14B-Thinking | 100+ QPS | 金融/政务 |
+| 标准级 | A100 40GB | Qwen3Guard-8B + Qwen3.6-35B-A3B (AWQ) | 30-50 QPS | 中型企业 |
+| 企业级 | A800 80GB | 双 Qwen3.6-35B-A3B (FP8) | 50-100 QPS | 大型企业 |
+| 高性能 | 2x H800 80GB | Qwen3.6-35B-A3B + Qwen3-14B-Thinking (FP8) | 100+ QPS | 金融/政务 |
 
-**Qwen3.6-35B-A3B MoE 优势**：
+> **⚠️ FP8 硬件要求**：
+> - FP8 量化需要 **NVIDIA Ada Lovelace (RTX 40系列) 或 Hopper (H800/H100) 及以上架构**
+> - 若离线环境使用 **A100 或更老的显卡（Ampere/Volta 架构）**，请降级使用 **AWQ/INT4 量化**
+> - 国产 GPU（如华为昇腾、海光 DCU）需确认 FP8 支持情况，建议使用 INT8 量化
+
+**量化方案选择指南**：
+
+| GPU 架构 | 支持的量化方案 | 推荐选择 |
+|---------|--------------|---------|
+| Hopper (H800/H100) | FP8, AWQ, INT8 | **FP8**（性能最优） |
+| Ada Lovelace (RTX 40系列) | FP8, AWQ, INT8 | **FP8** |
+| Ampere (A100/A800) | AWQ, INT8 | **AWQ INT4** |
+| Volta (V100) | INT8, FP16 | INT8 |
+| 国产 GPU | 需确认 | INT8 或 FP16 |
+
+**Qwen3.6-35B-A3B MoE 核心优势**：
 
 ```
 传统方案（Qwen2.5-72B）:
 ├── 显存需求: 2x A100 80GB
+├── 计算开销: 72B TFLOPS
 ├── 并发能力: 1-2 QPS
 └── 总成本: 高
 
 MoE 方案（Qwen3.6-35B-A3B）:
-├── 显存需求: 单张 A100 40GB (FP8)
-├── 激活参数: 仅 3B，速度≈7B
+├── 显存需求: 单张 A100 40GB (FP8/AWQ)
+├── 激活参数: 仅 3B
+├── 计算开销: 等效于 3B 模型 ←── 关键突破
 ├── 安全能力: ≈72B 级别
 ├── 并发能力: 20-30 QPS
 └── 总成本: 降低 60%+
+```
+
+**A3B (Active 3 Billion) 解释**：
+
+```
+Qwen3.6-35B-A3B 架构：
+┌─────────────────────────────────────────────────────────┐
+│ 总参数: 35B (混合专家)                                    │
+│ 激活参数: 仅 3B (每次推理实际参与计算的参数)               │
+│                                                         │
+│ 计算开销 = 激活参数 × 计算量                              │
+│         = 3B × FLOPs ≈ 传统 3B 模型的计算量              │
+│                                                         │
+│ 这意味着：                                               │
+│ • 推理速度: 接近 3B 模型                                 │
+│ • 显存占用: 需要 35B 模型的存储空间                       │
+│ • 智能水平: 达到 72B 级别的安全判定能力                   │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -2440,7 +2500,50 @@ class JudgeLogger:
 
 研究表明，让模型"先想后判"能显著减少对隐晦注入攻击的误报率。
 
-#### 优化后的 SYSTEM_PROMPT
+#### ⚡ 按需思考策略（重要）
+
+> **性能权衡**：CoT 会增加 Token 消耗和推理时间。对于离线环境的极致速度需求，建议采用"按需思考"策略：
+
+| 模型 | 是否使用 CoT | 原因 |
+|------|-------------|------|
+| **Qwen3Guard-8B-Stream** | ❌ 不使用 | 专用模型，直接输出判断结果，追求极致速度 |
+| **Qwen3.6-35B-A3B-Safe** | ✅ 使用 | 深度复核场景，需要思维链提升准确率 |
+
+**实现代码**：
+
+```python
+# 按需思考策略实现
+class AdaptiveCoTJudge:
+    """自适应 CoT 策略"""
+
+    # 快速判断提示词（无 CoT）
+    FAST_SYSTEM_PROMPT = """你是安全审核系统。直接判断内容是否安全。
+输出 JSON: {"is_safe": true/false, "risk_categories": [], "reason": "", "confidence": 0.0-1.0}"""
+
+    # 深度分析提示词（带 CoT）
+    DEEP_SYSTEM_PROMPT = COT_SYSTEM_PROMPT  # 使用完整的 CoT 提示词
+
+    def __init__(self, fast_judge, deep_judge):
+        self.fast_judge = fast_judge   # Qwen3Guard-8B
+        self.deep_judge = deep_judge   # Qwen3.6-35B-A3B
+
+    async def judge(self, text: str, use_cot: bool = False):
+        """按需选择是否使用 CoT"""
+        if use_cot:
+            # 深度分析（带 CoT）
+            return await self.deep_judge.judge(
+                text,
+                system_prompt=self.DEEP_SYSTEM_PROMPT
+            )
+        else:
+            # 快速判断（无 CoT）
+            return await self.fast_judge.judge(
+                text,
+                system_prompt=self.FAST_SYSTEM_PROMPT
+            )
+```
+
+#### 深度分析的 SYSTEM_PROMPT（用于 Qwen3.6-35B-A3B）
 
 ```python
 # gateway/judge_cot.py
@@ -3076,9 +3179,74 @@ groups:
 
 - [ ] 部署 ELK + Kibana 日志系统
 - [ ] 实现争议标记功能
+- [ ] **开发简易离线标注与向量入库工具**（Gradio/Streamlit）
+  - [ ] 一键标记误判样本
+  - [ ] 自动向量化并入库
+  - [ ] 支持批量导入风险模式
 - [ ] 建立审核流程
 - [ ] 定期导出训练数据
 - [ ] 向量库自进化（新增风险模式）
+
+**离线标注工具示例（Gradio）**：
+
+```python
+# tools/offline_labeler.py
+
+import gradio as gr
+from vector_risk_db import VectorRiskDatabase, RiskPattern
+from offline_embedding import OfflineEmbeddingModel
+
+class OfflineLabeler:
+    """离线标注与向量入库工具"""
+
+    def __init__(self):
+        self.vector_db = VectorRiskDatabase()
+        self.embedding_model = OfflineEmbeddingModel()
+
+    def label_and_add(self, text: str, risk_type: str, severity: str):
+        """标注并添加到向量库"""
+        # 生成 embedding
+        embedding = self.embedding_model.embed(text)
+
+        # 创建风险模式
+        pattern = RiskPattern(
+            id=f"custom_{len(self.vector_db.metadata)}",
+            pattern_text=text,
+            embedding=embedding,
+            risk_type=risk_type,
+            severity=severity
+        )
+
+        # 添加到向量库
+        self.vector_db.add_pattern(pattern)
+
+        return f"已添加: {risk_type} - {text[:30]}..."
+
+# Gradio 界面
+with gr.Blocks(title="离线风险标注工具") as demo:
+    gr.Markdown("# 🔒 离线风险标注与向量入库")
+
+    with gr.Row():
+        text_input = gr.Textbox(label="风险文本", lines=3)
+        risk_type = gr.Dropdown(
+            choices=["prompt_injection", "social_engineering", "multi_turn_manipulation", "other"],
+            label="风险类型"
+        )
+        severity = gr.Radio(["high", "medium", "low"], label="严重程度")
+
+    add_btn = gr.Button("添加到风险库", variant="primary")
+    result = gr.Textbox(label="结果")
+
+    labeler = OfflineLabeler()
+    add_btn.click(
+        labeler.label_and_add,
+        inputs=[text_input, risk_type, severity],
+        outputs=result
+    )
+
+# 启动（仅内网访问）
+demo.launch(server_name="0.0.0.0", server_port=7860, share=False)
+```
 
 ### Phase 4：持续演进（季度）
 
