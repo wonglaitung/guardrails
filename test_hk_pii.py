@@ -816,23 +816,26 @@ def test_edge_cases():
     # ========== 特殊字符与格式边界 ==========
     print("\n--- 特殊字符与格式边界 ---")
     special_cases = [
-        ("Mobile\t:\t91234567", "制表符分隔"),
-        ("Name:\nWong Yan Yee", "换行分隔"),
-        ("Tel:  91234567", "多个空格"),
-        ("Mobile:91234567", "无空格"),
-        ("[Mobile: 91234567]", "方括号包围"),
-        ("(Tel: 51234567)", "圆括号包围"),
+        # 电话号码测试
+        ("Mobile\t:\t91234567", "制表符分隔", "HK_PHONE_NUMBER"),
+        ("Tel:  91234567", "多个空格", "HK_PHONE_NUMBER"),
+        ("Mobile:91234567", "无空格", "HK_PHONE_NUMBER"),
+        ("[Mobile: 91234567]", "方括号包围", "HK_PHONE_NUMBER"),
+        ("(Tel: 51234567)", "圆括号包围", "HK_PHONE_NUMBER"),
+        # 姓名测试
+        ("Name:\nWong Yan Yee", "换行分隔", "HK_NAME"),
     ]
 
-    for text, desc in special_cases:
+    for text, desc, expected_type in special_cases:
         entities = guardrail_en.detect(text)
-        # 应该能检测到
-        if entities and any(e.entity_type == "HK_PHONE_NUMBER" for e in entities):
+        # 应该能检测到预期实体
+        if entities and any(e.entity_type == expected_type for e in entities):
             passed += 1
-            print(f"✓ [{desc}] '{text[:30]}...' 正确识别")
+            print(f"✓ [{desc}] '{text[:30]}...' 正确识别 {expected_type}")
         else:
             failed += 1
-            print(f"✗ [{desc}] '{text[:30]}...' 未能识别")
+            found = [e.entity_type for e in entities] if entities else []
+            print(f"✗ [{desc}] '{text[:30]}...' 未能识别 {expected_type}, 找到: {found}")
 
     print(f"\n结果: {passed} 通过, {failed} 失败")
     return failed == 0

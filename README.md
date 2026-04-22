@@ -245,43 +245,100 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 #### Docker 部署（推荐）
 
-使用 Docker 快速部署 Gateway 服务：
+##### 方式一：使用脚本启动（推荐）
+
+`docker-run.sh` 会自动从配置文件中提取所需的环境变量并传递给容器。
+
+**1. 配置环境变量：**
+
+```bash
+# 方式 A：直接导出环境变量
+export OPENAI_API_KEY="sk-xxx"
+export VOLCES_API_KEY="your-volces-key"
+export ANTHROPIC_API_KEY="sk-ant-xxx"
+# ... 其他需要的 API Key
+
+# 方式 B：创建 .env 文件（推荐）
+cat > .env << 'EOF'
+OPENAI_API_KEY=sk-xxx
+VOLCES_API_KEY=your-volces-key
+ANTHROPIC_API_KEY=sk-ant-xxx
+GLM_API_KEY=your-glm-key
+DASHSCOPE_API_KEY=your-dashscope-key
+EOF
+
+# 加载 .env 文件
+source .env
+```
+
+**2. 启动服务：**
+
+```bash
+# 构建镜像
+./docker-build.sh
+
+# 启动容器（自动传递已设置的环境变量）
+./docker-run.sh
+
+# 或指定自定义配置文件
+GATEWAY_CONFIG=./my-config.yaml ./docker-run.sh
+```
+
+脚本会自动：
+- 从 `configs/gateway.yaml` 中提取 `${VAR_NAME}` 格式的变量名
+- 检查这些变量是否在环境中设置
+- 将已设置的变量传递给容器
+
+##### 方式二：手动 Docker 命令
 
 ```bash
 # 1. 构建镜像
 docker build -t guardrails-gateway:latest .
 
-# 2. 运行容器（火山方舟 GLM-4.7 示例）
+# 2. 运行容器
 docker run -d \
   -p 8080:8080 \
+  -e OPENAI_API_KEY="sk-xxx" \
   -e VOLCES_API_KEY="your-api-key" \
-  -e GATEWAY_WORKERS=2 \
   --name guardrails-gateway \
   --restart unless-stopped \
   guardrails-gateway:latest
 
 # 3. 测试访问
 curl http://localhost:8080/health
-curl http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model": "glm-4.7", "messages": [{"role": "user", "content": "你好"}]}'
 ```
 
-**多模型配置示例：**
+##### 配置文件中的环境变量
 
-```bash
-# 同时支持 OpenAI + 火山方舟
-docker run -d \
-  -p 8080:8080 \
-  -e OPENAI_API_KEY="sk-openai-xxx" \
-  -e VOLCES_API_KEY="your-api-key" \
-  -e GATEWAY_WORKERS=4 \
-  -e GATEWAY_LOG_LEVEL=info \
-  --name guardrails-gateway \
-  guardrails-gateway:latest
+配置文件 `configs/gateway.yaml` 使用 `${VAR_NAME}` 格式引用环境变量：
+
+```yaml
+models:
+  gpt-4:
+    api_key: "${OPENAI_API_KEY}"      # 引用 OPENAI_API_KEY 环境变量
+
+  glm-4.7:
+    api_key: "${VOLCES_API_KEY}"      # 引用 VOLCES_API_KEY 环境变量
+
+  claude-3-opus:
+    api_key: "${ANTHROPIC_API_KEY}"   # 引用 ANTHROPIC_API_KEY 环境变量
 ```
 
 **支持的环境变量：**
+
+| 变量名 | 说明 |
+|--------|------|
+| `OPENAI_API_KEY` | OpenAI API Key |
+| `ANTHROPIC_API_KEY` | Claude API Key |
+| `AZURE_OPENAI_KEY` | Azure OpenAI Key |
+| `AZURE_OPENAI_ENDPOINT` | Azure OpenAI Endpoint |
+| `VOLCES_API_KEY` | 火山方舟 API Key |
+| `GLM_API_KEY` | 智谱 AI API Key |
+| `DASHSCOPE_API_KEY` | 阿里云通义千问 API Key |
+| `QIANFAN_API_KEY` | 百度千帆 API Key |
+| `MOONSHOT_API_KEY` | Moonshot AI API Key |
+
+**Docker 运行时环境变量：**
 
 | 变量名 | 说明 | 默认值 |
 |--------|------|--------|
@@ -290,16 +347,13 @@ docker run -d \
 | `GATEWAY_PORT` | 绑定端口 | 8080 |
 | `GATEWAY_CONFIG` | 配置文件路径 | /app/configs/gateway.yaml |
 | `GATEWAY_LOG_LEVEL` | 日志级别 | warning |
-| `VOLCES_API_KEY` | 火山方舟 API Key | - |
-| `OPENAI_API_KEY` | OpenAI API Key | - |
-| `ANTHROPIC_API_KEY` | Claude API Key | - |
 
 Docker 镜像特性：
 - 多阶段构建，体积小
 - 使用 Gunicorn + Uvicorn worker，生产就绪
 - 内置健康检查
 - 非 root 用户运行
-- 支持环境变量传入 API keys
+- 自动传递配置文件所需的环境变量
 
 ---
 

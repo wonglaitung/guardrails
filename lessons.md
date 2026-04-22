@@ -1,5 +1,95 @@
 # 经验教训
 
+## Docker 脚本设计：通用优于硬编码
+
+### 问题：硬编码环境变量名不灵活
+
+**现象**：
+用户问 "docker-run.sh 支持 VOLCES_API_KEY 吗？" —— 需要手动添加每个新变量。
+
+**不好的实现**：
+```bash
+# 硬编码每个变量名
+if [ -n "$OPENAI_API_KEY" ]; then
+    ENV_VARS="${ENV_VARS} -e OPENAI_API_KEY=${OPENAI_API_KEY}"
+fi
+if [ -n "$ANTHROPIC_API_KEY" ]; then
+    ENV_VARS="${ENV_VARS} -e ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}"
+fi
+# ... 每新增一个变量都要改脚本
+```
+
+**好的实现**：
+```bash
+# 从配置文件自动提取变量名
+if [ -f "${CONFIG_FILE}" ]; then
+    VAR_NAMES=$(grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' "${CONFIG_FILE}" | sed 's/[${}]//g' | sort -u)
+    for var_name in $VAR_NAMES; do
+        var_value="${!var_name}"
+        if [ -n "$var_value" ]; then
+            ENV_VARS="${ENV_VARS} -e ${var_name}=${var_value}"
+        fi
+    done
+fi
+```
+
+**教训**：
+1. 不要硬编码可变内容，从源头（配置文件）动态获取
+2. 配置文件中的 `${VAR_NAME}` 就是"需要哪些变量"的声明
+3. 脚本无需关心具体变量名，只负责传递
+
+---
+
+## 测试代码常见陷阱
+
+### 问题：测试断言逻辑错误导致误判
+
+**现象**：
+```
+✗ [换行分隔] 'Name:\nWong Yan Yee...' 未能识别
+测试通过率: 90.9%
+```
+
+**调查过程**：
+1. 单独测试识别器 → 正常识别
+2. 使用完整 guardrail 测试 → 正常识别
+3. 检查测试代码 → 发现断言逻辑错误
+
+**根因**：
+```python
+# 错误代码 - 对所有用例检查同一实体类型
+special_cases = [
+    ("Mobile\t:\t91234567", "制表符分隔"),      # 电话
+    ("Name:\nWong Yan Yee", "换行分隔"),        # 姓名 ← 检查 HK_PHONE_NUMBER
+    ("Tel:  91234567", "多个空格"),              # 电话
+]
+
+for text, desc in special_cases:
+    if any(e.entity_type == "HK_PHONE_NUMBER" for e in entities):  # ❌ 全检查电话
+        passed += 1
+```
+
+**修复**：
+```python
+# 正确代码 - 每个用例指定预期类型
+special_cases = [
+    ("Mobile\t:\t91234567", "制表符分隔", "HK_PHONE_NUMBER"),
+    ("Name:\nWong Yan Yee", "换行分隔", "HK_NAME"),      # ✓ 检查 HK_NAME
+    ("Tel:  91234567", "多个空格", "HK_PHONE_NUMBER"),
+]
+
+for text, desc, expected_type in special_cases:
+    if any(e.entity_type == expected_type for e in entities):  # ✓ 检查对应类型
+        passed += 1
+```
+
+**教训**：
+1. 测试失败时，先验证功能是否真的有问题，还是测试代码本身有 bug
+2. 使用"单一职责"原则设计测试用例，避免一锅端式的断言
+3. 混合类型测试时，必须为每个用例明确预期结果
+
+---
+
 ## Docker 构建问题
 
 ### 问题：docker-entrypoint.sh 未找到
