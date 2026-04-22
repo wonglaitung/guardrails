@@ -1,6 +1,6 @@
 # 中文 PII Guardrail + LLM Gateway
 
-基于 Microsoft Presidio 的中文敏感信息检测与脱敏方案，**新增 HTTP 代理网关**，支持 OpenAI/Claude API 格式，实现请求/响应实时 PII 过滤。
+基于 Microsoft Presidio 的中文敏感信息检测与脱敏方案，支持 **Two-Layer Guardrail**：Layer 1 规则检测 + Layer 2 实时裁判。
 
 **支持简体中文、繁体中文、英文，以及中英混合文本。**
 
@@ -23,15 +23,29 @@
 
 ## 特性
 
-### PII 检测核心
+### Two-Layer Guardrail Architecture
+
+```
+请求 → Layer 1 (PII规则检测) → Layer 2 (LLM Judge) → 上游服务
+              ↓                        ↓
+           PII脱敏              风险检测/流式拦截
+```
+
+**Layer 1: PII规则检测**（默认启用）
 - 🔒 **自动语言检测** - 统一入口自动识别简体/繁体/英文
 - 🇨🇳 **中国特有 PII** - 手机号、身份证、银行卡、护照、车牌、统一社会信用代码
 - 🇭🇰 **香港 PII** - 香港电话、身份证、英文姓名识别
 - 🌐 **多语言占位符** - 根据文本语言自动选择对应占位符
 - ⚙️ **灵活配置** - 自定义占位符、置信度阈值、遮盖样式
 
-### LLM Gateway（新增）
-- 🚀 **API 代理** - 支持 OpenAI、Claude API 格式
+**Layer 2: LLM Judge**（可选启用）
+- 🤖 **语义检测** - 基于 Qwen3Guard-8B-Stream，理解意图而非仅匹配规则
+- ⚡ **流式拦截** - Token 级实时检测，发现风险立即中断输出
+- 🎯 **快速检测** - 无 CoT 模式，追求速度（~100ms）
+- 💾 **结果缓存** - TTL 缓存减少重复调用
+
+### LLM Gateway
+- 🚀 **API 代理** - 支持 OpenAI、Claude、GLM、通义千问等多平台
 - 🔄 **流式支持** - SSE 实时过滤，不中断用户体验
 - 🔐 **认证管理** - 支持 config/client/both 三种认证模式
 - ⚡ **异步处理** - 基于 FastAPI + httpx，高性能并发
@@ -149,7 +163,9 @@ curl -X POST https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions \
 
 | 特性 | 直接访问上游 | 通过网关访问 |
 |------|-------------|-------------|
-| PII 过滤 | ❌ 无 | ✅ 自动脱敏 |
+| PII 过滤 | ❌ 无 | ✅ Layer 1 自动脱敏 |
+| 语义检测 | ❌ 无 | ✅ Layer 2 Judge（可选） |
+| 流式拦截 | ❌ 无 | ✅ Token 级实时熔断 |
 | API Key 管理 | 客户端持有 | 网关统一托管 |
 | 访问控制 | 依赖上游 | 支持白名单/认证 |
 | 日志审计 | ❌ 无 | ✅ 完整记录 |
@@ -508,6 +524,46 @@ filter:
   enabled: true
   min_score: 0.5
   action: "redact"  # redact | block | log
+
+# Layer 2 Judge 配置（可选）
+judge:
+  enabled: false  # 设为 true 启用
+  endpoint: "http://localhost:8001/v1/chat/completions"
+  model: "Qwen3Guard-8B-Stream"
+  timeout: 5.0
+  timeout_action: "pass"  # pass | block
+```
+
+### 启用 Layer 2 Judge
+
+Layer 2 Judge 需要 Qwen3Guard-8B-Stream 服务。启动步骤：
+
+**1. 启动 Judge 服务：**
+
+```bash
+# 使用 vLLM 或其他推理框架
+python -m vllm.entrypoints.openai.api_server \
+  --model Qwen/Qwen3Guard-8B-Stream \
+  --host 0.0.0.0 \
+  --port 8001
+```
+
+**2. 配置 Gateway：**
+
+```yaml
+# configs/gateway.yaml
+judge:
+  enabled: true
+  endpoint: "http://localhost:8001/v1/chat/completions"
+  model: "Qwen3Guard-8B-Stream"
+  timeout: 5.0
+  timeout_action: "pass"
+```
+
+**3. 重启 Gateway：**
+
+```bash
+./run_gateway.sh -d
 ```
 
 ---
@@ -519,12 +575,16 @@ filter:
 ├── chinese_pii_recognizers.py  # PII 识别器模块
 ├── chinese_guardrail.py         # PII 检测主模块
 ├── chinese_name_recognizer.py   # 中文姓名识别
-├── gateway/                     # HTTP 代理网关（新增）
+├── gateway/                     # HTTP 代理网关
 │   ├── main.py                  # FastAPI 应用入口
-│   ├── proxy.py                 # 代理核心逻辑
+│   ├── proxy.py                 # 代理核心逻辑（协调 Layer 1/2）
+│   ├── judge.py                 # Layer 2 裁判模块
+│   ├── stream_interceptor.py    # Token 级流式拦截器
 │   ├── stream_handler.py        # SSE 流处理
 │   ├── config.py                # 配置管理
-│   └── models.py                # Pydantic 模型
+│   ├── models.py                # Pydantic 模型
+│   ├── exceptions.py            # 自定义异常类
+│   └── middleware.py            # 中间件
 ├── configs/
 │   └── gateway.yaml             # 网关配置文件
 ├── test_hk_pii.py               # 香港 PII 测试
